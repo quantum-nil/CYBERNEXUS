@@ -146,7 +146,7 @@ def health():
 
 @router.get("/auth/config")
 def auth_config():
-    return {"provider": "OIDC", "required": settings.auth_required or settings.environment.lower() == "production", "configured": bool(settings.oidc_issuer_url and settings.oidc_audience and (settings.oidc_jwks_url or settings.oidc_issuer_url)), "authorization_url": settings.oidc_authorization_url or None, "client_id": settings.oidc_client_id or None, "redirect_uri": settings.oidc_redirect_uri, "scopes": settings.oidc_scopes.split()}
+    return {"provider": "OIDC", "required": settings.auth_required, "configured": bool(settings.oidc_issuer_url and settings.oidc_audience and (settings.oidc_jwks_url or settings.oidc_issuer_url)), "authorization_url": settings.oidc_authorization_url or None, "client_id": settings.oidc_client_id or None, "redirect_uri": settings.oidc_redirect_uri, "scopes": settings.oidc_scopes.split()}
 
 @router.get("/auth/me")
 def auth_me(principal: Principal = Depends(get_current_principal)):

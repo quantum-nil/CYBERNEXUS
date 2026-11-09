@@ -52,9 +52,9 @@ def principal_from_headers(db, authorization: str | None, cookie: str | None, le
     token = authorization.removeprefix("Bearer ").strip() if authorization and authorization.startswith("Bearer ") else cookie
     if token:
         return sync_user(db, verify_token(token))
-    if settings.auth_required or settings.environment.lower() == "production":
+    if settings.auth_required:
         raise HTTPException(401, "Authentication required")
-    # Development compatibility only. This branch is disabled in production.
+    # Anonymous passive access is allowed when AUTH_REQUIRED is disabled.
     legacy = (legacy_header or "anonymous").strip()[:160] or "anonymous"
     return Principal(user_id=legacy, external_subject=None, role="user", authenticated=False, legacy_ids=(legacy,))
 
