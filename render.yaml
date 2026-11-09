@@ -1,0 +1,32 @@
+databases:
+  - name: cybernexus-db
+    plan: free
+    databaseName: cybernexus
+    user: cybernexus
+
+services:
+  - type: web
+    name: cybernexus-api
+    runtime: docker
+    plan: free
+    dockerfilePath: ./backend/Dockerfile
+    healthCheckPath: /docs
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: cybernexus-db
+          property: connectionString
+      - key: ENVIRONMENT
+        value: production
+      - key: PUBLIC_APP_URL
+        value: https://cybernexus-web.onrender.com
+
+  - type: web
+    name: cybernexus-web
+    runtime: docker
+    plan: free
+    dockerfilePath: ./frontend/Dockerfile
+    dockerContext: ./frontend
+    envVars:
+      - key: VITE_API_URL
+        value: https://cybernexus-api.onrender.com/api
