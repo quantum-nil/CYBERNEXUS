@@ -101,7 +101,10 @@ def _admin(x_admin_token: str | None) -> bool:
 
 def _scan_authorization(db, payload: ScanRequest, principal: Principal):
     """Validate the authorization boundary for a direct scanner request."""
-    required = settings.enforce_scan_authorization or settings.environment.lower() == "production" or payload.authorization_id is not None
+    # Public passive scans are allowed when authentication and explicit scan
+    # authorization are disabled. Supplying an authorization_id still opts
+    # into the full authorization checks below.
+    required = settings.enforce_scan_authorization or settings.auth_required or payload.authorization_id is not None
     if not required:
         return None, None
     if payload.authorization_id is None:
