@@ -4,5 +4,4 @@ COPY backend/requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 COPY backend /app/backend
 COPY engines /app/engines
-COPY intelligence /app/intelligence
 CMD ["uvicorn", "backend.app.main:app", "--host", "0.0.0.0", "--port", "8000"]
