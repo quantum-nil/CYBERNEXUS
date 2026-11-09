@@ -12,7 +12,14 @@ pool_args = {} if is_sqlite else {
     "pool_timeout": settings.database_pool_timeout_seconds,
     "pool_pre_ping": True,
 }
-engine = create_engine(settings.database_url, connect_args=connect_args, **pool_args)
+database_url = settings.database_url
+# Render provides PostgreSQL URLs using psycopg2's default dialect. This app
+# bundles psycopg v3, so route PostgreSQL connections through its SQLAlchemy driver.
+if database_url.startswith("postgres://"):
+    database_url = database_url.replace("postgres://", "postgresql+psycopg://", 1)
+elif database_url.startswith("postgresql://"):
+    database_url = database_url.replace("postgresql://", "postgresql+psycopg://", 1)
+engine = create_engine(database_url, connect_args=connect_args, **pool_args)
 SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
 Base = declarative_base()
 
