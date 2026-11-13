@@ -47,7 +47,12 @@ def run_migrations():
                     # application runs them at startup. SQLite has no
                     # ADD COLUMN IF NOT EXISTS syntax.
                     message = str(exc).lower()
-                    if "duplicate column" not in message and "already exists" not in message:
+                    if (
+                        "duplicate column" not in message
+                        and "already exists" not in message
+                        and "unique constraint" not in message
+                        and "duplicate key" not in message
+                    ):
                         raise
         _install_ledger_guards(connection)
 
