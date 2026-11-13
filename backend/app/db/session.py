@@ -1,3 +1,4 @@
+import re
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import SQLAlchemyError
 from pathlib import Path
@@ -33,15 +34,26 @@ def get_db():
 def run_migrations():
     migration_dir=Path(__file__).resolve().parents[2] / "migrations"
     with engine.begin() as connection:
+        dialect = connection.dialect.name
+        connection.execute(text("CREATE TABLE IF NOT EXISTS schema_migrations (version VARCHAR(255) PRIMARY KEY, applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"))
+        applied_rows = connection.execute(text("SELECT version FROM schema_migrations")).fetchall()
+        applied = {row[0] for row in applied_rows}
         for path in sorted(migration_dir.glob("*.sql")):
+            if path.name in applied:
+                continue
             for statement in path.read_text(encoding="utf-8").split(";"):
-                if not statement.strip():
+                stmt = statement.strip()
+                if not stmt:
                     continue
+                if dialect == "postgresql":
+                    stmt = re.sub(r'(?i)\bADD\s+COLUMN\s+(?!IF\s+NOT\s+EXISTS\b)', 'ADD COLUMN IF NOT EXISTS ', stmt)
+                    if re.match(r'(?i)^\s*INSERT\s+INTO\b', stmt) and "ON CONFLICT" not in stmt.upper():
+                        stmt = stmt.rstrip() + " ON CONFLICT DO NOTHING"
                 try:
                     # Isolate each statement so a duplicate-column error does
                     # not abort the PostgreSQL transaction for later migrations.
                     with connection.begin_nested():
-                        connection.execute(text(statement))
+                        connection.execute(text(stmt))
                 except SQLAlchemyError as exc:
                     # Migrations are intentionally idempotent because the
                     # application runs them at startup. SQLite has no
@@ -54,6 +66,12 @@ def run_migrations():
                         and "duplicate key" not in message
                     ):
                         raise
+            insert_stmt = (
+                "INSERT INTO schema_migrations (version) VALUES (:v) ON CONFLICT DO NOTHING"
+                if dialect == "postgresql"
+                else "INSERT OR IGNORE INTO schema_migrations (version) VALUES (:v)"
+            )
+            connection.execute(text(insert_stmt), {"v": path.name})
         _install_ledger_guards(connection)
 
 def _install_ledger_guards(connection):
