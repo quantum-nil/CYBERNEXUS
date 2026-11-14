@@ -102,7 +102,10 @@ def _admin(x_admin_token: str | None) -> bool:
 
 def _scan_authorization(db, payload: ScanRequest, principal: Principal):
     """Validate the authorization boundary for a direct scanner request."""
-    required = settings.enforce_scan_authorization or settings.environment.lower() == "production" or payload.authorization_id is not None
+    # Public passive scans are allowed when authentication and explicit scan
+    # authorization are disabled. Supplying an authorization_id still opts
+    # into the full authorization checks below.
+    required = settings.enforce_scan_authorization or settings.auth_required or payload.authorization_id is not None
     if not required:
         return None, None
     if payload.authorization_id is None:
@@ -144,7 +147,7 @@ def health():
 
 @router.get("/auth/config")
 def auth_config():
-    return {"provider": "OIDC", "required": settings.auth_required or settings.environment.lower() == "production", "configured": bool(settings.oidc_issuer_url and settings.oidc_audience and (settings.oidc_jwks_url or settings.oidc_issuer_url)), "authorization_url": settings.oidc_authorization_url or None, "client_id": settings.oidc_client_id or None, "redirect_uri": settings.oidc_redirect_uri, "scopes": settings.oidc_scopes.split()}
+    return {"provider": "OIDC", "required": settings.auth_required, "configured": bool(settings.oidc_issuer_url and settings.oidc_audience and (settings.oidc_jwks_url or settings.oidc_issuer_url)), "authorization_url": settings.oidc_authorization_url or None, "client_id": settings.oidc_client_id or None, "redirect_uri": settings.oidc_redirect_uri, "scopes": settings.oidc_scopes.split()}
 
 @router.get("/auth/me")
 def auth_me(principal: Principal = Depends(get_current_principal)):
@@ -742,6 +745,62 @@ def get_scan(scan_id: int, db: Session = Depends(get_db)):
     row = db.get(Scan, scan_id)
     if not row: raise HTTPException(404, "Scan not found")
     return {"id": row.id, **json.loads(row.result_json), "created_at": row.created_at}
+
+@router.get("/scans/{scan_id}/evidence-chain")
+def scan_evidence_chain(scan_id: int, db: Session = Depends(get_db)):
+    """Return the persisted evidence-to-provenance chain for one website scan.
+
+    Empty stages are intentional: a local scan is not silently represented as
+    a report revision or blockchain anchor until those records actually exist.
+    """
+    from backend.app.models.models import IndicatorObservation, SecurityAssessment, SecurityFinding, SecurityEvidence, ReportCommitment, ProvenanceEvent, AppendOnlyLedgerEvent, BlockchainTransaction
+    row = db.get(Scan, scan_id)
+    if not row:
+        raise HTTPException(404, "Scan not found")
+    result = json.loads(row.result_json or "{}")
+    providers = db.query(ProviderVerdict).filter(ProviderVerdict.scan_id == scan_id).order_by(ProviderVerdict.checked_at.asc()).all()
+    observations = db.query(IndicatorObservation).filter(IndicatorObservation.source_analysis_id == str(scan_id)).order_by(IndicatorObservation.first_observed.asc()).all()
+    assessment = db.query(SecurityAssessment).filter(SecurityAssessment.scan_id == scan_id).order_by(SecurityAssessment.id.desc()).first()
+    findings = []
+    security_evidence = []
+    if assessment:
+        finding_rows = db.query(SecurityFinding).filter(SecurityFinding.assessment_id == assessment.id).order_by(SecurityFinding.id.asc()).all()
+        finding_ids = [item.id for item in finding_rows]
+        evidence_rows = db.query(SecurityEvidence).filter(SecurityEvidence.assessment_id == assessment.id).order_by(SecurityEvidence.id.asc()).all()
+        findings = [{"id": item.id, "title": item.title, "status": item.status, "severity": item.severity, "confidence": item.confidence, "evidence": json.loads(item.evidence_json or "{}"), "detected_at": item.last_detected} for item in finding_rows]
+        security_evidence = [{"id": item.id, "finding_id": item.finding_id, "source": item.source, "evidence_type": item.evidence_type, "details": json.loads(item.details_json or "{}"), "observed_at": item.observed_at} for item in evidence_rows if not finding_ids or item.finding_id in finding_ids]
+
+    revisions = []
+    for revision in db.query(ReportRevision).order_by(ReportRevision.created_at.asc()).all():
+        try:
+            payload = json.loads(revision.canonical_payload or "{}")
+        except (TypeError, ValueError):
+            payload = {}
+        if str(payload.get("scan_id") or payload.get("source_scan_id") or "") != str(scan_id):
+            continue
+        commitment = db.query(ReportCommitment).filter(ReportCommitment.revision_id == revision.id).first()
+        ledger = db.query(AppendOnlyLedgerEvent).filter(AppendOnlyLedgerEvent.revision_id == revision.id).order_by(AppendOnlyLedgerEvent.sequence_number.asc()).all()
+        blockchain = db.query(BlockchainTransaction).filter(BlockchainTransaction.revision_id == revision.id).order_by(BlockchainTransaction.id.asc()).all()
+        revisions.append({"id": revision.id, "report_id": revision.report_id, "revision_number": revision.revision_number, "hash": revision.canonical_report_hash, "created_at": revision.created_at, "commitment": {"id": commitment.id, "value": commitment.commitment, "scope": commitment.commitment_scope} if commitment else None, "ledger": [{"id": event.id, "sequence": event.sequence_number, "hash": event.event_hash, "type": event.event_type, "occurred_at": event.occurred_at} for event in ledger], "blockchain": [{"id": tx.id, "hash": tx.tx_hash, "status": tx.status, "confirmations": tx.confirmations, "block_number": tx.block_number} for tx in blockchain]})
+
+    def stage(name, status, items, explanation):
+        return {"stage": name, "status": status, "items": items, "explanation": explanation}
+
+    provider_items = [{"id": item.id, "provider": item.provider, "status": item.status, "verdict": item.verdict, "evidence": json.loads(item.evidence_json or "{}"), "checked_at": item.checked_at, "confidence": (json.loads(item.evidence_json or "{}").get("confidence"))} for item in providers]
+    indicator_items = [{"id": item.id, "indicator_id": item.indicator_id, "normalized_value": item.normalized_value, "source_analysis_type": item.source_analysis_type, "provider": item.source_provider, "status": item.verification_status, "confidence": item.confidence, "observed_at": item.last_observed} for item in observations]
+    ledger_items = [event for revision in revisions for event in revision["ledger"]]
+    commitment_items = [revision["commitment"] | {"revision_id": revision["id"], "created_at": revision["created_at"]} for revision in revisions if revision.get("commitment")]
+    blockchain_items = [item | {"revision_id": revision["id"]} for revision in revisions for item in revision["blockchain"]]
+    return {"scan_id": row.id, "target": row.url, "observed_at": row.created_at, "stages": [
+        stage("OBSERVATION", "RECORDED", [{"id": row.id, "type": "WEBSITE_SCAN", "target": row.url, "status": row.status, "observed_at": row.created_at}], "The scanner observation persisted for this target."),
+        stage("PROVIDER_RESULT", "RECORDED" if provider_items else "UNKNOWN", provider_items, "Provider state, verdict, evidence and check time come from persisted provider records."),
+        stage("NORMALIZED_INDICATOR", "RECORDED" if indicator_items else "UNKNOWN", indicator_items, "Only persisted indicator observations linked to this scan are shown."),
+        stage("FINDING", "RECORDED" if findings else "UNKNOWN", findings + security_evidence, "Findings and security evidence are shown only when a persisted assessment is linked to this scan."),
+        stage("REPORT_REVISION", "RECORDED" if revisions else "NOT_CREATED", revisions, "A report revision is not inferred from a scan; it must explicitly reference the scan."),
+        stage("CANONICAL_COMMITMENT", "RECORDED" if commitment_items else "NOT_CREATED", commitment_items, "Commitments are local canonical hashes until a verified external anchor exists."),
+        stage("APPEND_ONLY_LEDGER_EVENT", "RECORDED" if ledger_items else "NOT_CREATED", ledger_items, "Ledger events are the local tamper-evident provenance layer."),
+        stage("BLOCKCHAIN_ANCHOR", "RECORDED" if blockchain_items else "NOT_ANCHORED", blockchain_items, "Blockchain status is reported only from persisted transaction metadata."),
+    ], "risk": result.get("risk", {}), "freshness": {"observed_at": row.created_at, "provider_records": len(provider_items), "policy": "Freshness is measured from each source timestamp; unavailable data is not treated as clean."}}
 
 @router.get("/scans/{scan_id}/certificate")
 def certificate_details(scan_id: int, db: Session = Depends(get_db)):

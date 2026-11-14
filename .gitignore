@@ -26,3 +26,6 @@ frontend/playwright-*.png
 *.tsbuildinfo
 .vercel
 .env*
+*.db
+*.db-*
+*.bak

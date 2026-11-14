@@ -81,7 +81,8 @@ def resolve_infrastructure(domain):
 
 def analyze_identity(url):
     try:
-        with httpx.stream("GET",url,headers={"User-Agent":"DigitalTrustIntelligence/1.0"},follow_redirects=False,timeout=6) as response:
+        with httpx.stream("GET",url,headers={"User-Agent":"DigitalTrustIntelligence/1.0"},follow_redirects=True,timeout=8) as response:
+            effective_url = str(response.url)
             content_type=response.headers.get("content-type","").lower()
             if "text/html" not in content_type: return {"status":"skipped","reason":"Response is not HTML","content_type":content_type}
             chunks=[]; total=0
@@ -90,7 +91,7 @@ def analyze_identity(url):
                 if remaining<=0: break
                 chunks.append(chunk[:remaining]); total+=len(chunks[-1])
             body=b"".join(chunks); text=body.decode(response.encoding or 'utf-8','ignore'); title=(re.search(r'<title[^>]*>(.*?)</title>',text,re.I|re.S) or [None,''])[1].strip()[:300]; meta=(re.search(r'<meta[^>]+name=["\']description["\'][^>]+content=["\']([^"\']*)',text,re.I) or [None,''])[1].strip()[:500]
-            discovered=discover(url,text)
+            discovered=discover(effective_url,text)
             for manifest_url in discovered["manifests"][:1]:
                 try:
                     manifest=safe_fetch(manifest_url,max_bytes=100000).body.decode("utf-8","replace"); data=json.loads(manifest)
@@ -113,7 +114,7 @@ def analyze_identity(url):
             favicon_assets=fetch_assets(discovered["favicons"],8); logo_assets=fetch_assets(discovered["logos"],8)
             available_favicons=[item for item in favicon_assets if item.get("status")=="available"]
             available_logos=[item for item in logo_assets if item.get("status")=="available"]
-            return {"status":"available","http_status":response.status_code,"title":re.sub(r'\s+',' ',title),"meta_description":re.sub(r'\s+',' ',meta),"content_sha256":hashlib.sha256(body).hexdigest(),"favicon_url":available_favicons[0].get("url") if available_favicons else urljoin(url,'/favicon.ico'),"favicon_candidates":favicon_assets,"favicon_status":"available" if available_favicons else "FAVICON_NOT_FOUND","logo_candidates":[item["url"] for item in discovered["logos"]],"logo_assets":logo_assets,"logo_status":"available" if available_logos else "LOGO_NOT_FOUND","logo_comparison":{"status":"COMPARISON_UNAVAILABLE_NO_VERIFIED_REFERENCE","reason":"No verified reference logo is configured"},"favicon_comparison":{"status":"COMPARISON_UNAVAILABLE_NO_VERIFIED_REFERENCE","reason":"No verified reference favicon is configured"},"identity_assessment":"UNKNOWN","login_indicators":bool(re.search(r'login|sign[ -]?in|password|credential',text,re.I)),"payment_indicators":bool(re.search(r'payment|card|wallet|bank',text,re.I)),"scripts":re.findall(r'<script[^>]+src=["\']([^"\']+)',text,re.I)[:50],"truncated":total>=1000000}
+            return {"status":"available","http_status":response.status_code,"title":re.sub(r'\s+',' ',title),"meta_description":re.sub(r'\s+',' ',meta),"content_sha256":hashlib.sha256(body).hexdigest(),"favicon_url":available_favicons[0].get("url") if available_favicons else urljoin(effective_url,'/favicon.ico'),"favicon_candidates":favicon_assets,"favicon_status":"available" if available_favicons else "FAVICON_NOT_FOUND","logo_candidates":[item["url"] for item in discovered["logos"]],"logo_assets":logo_assets,"logo_status":"available" if available_logos else "LOGO_NOT_FOUND","logo_comparison":{"status":"COMPARISON_UNAVAILABLE_NO_VERIFIED_REFERENCE","reason":"No verified reference logo is configured"},"favicon_comparison":{"status":"COMPARISON_UNAVAILABLE_NO_VERIFIED_REFERENCE","reason":"No verified reference favicon is configured"},"identity_assessment":"UNKNOWN","login_indicators":bool(re.search(r'login|sign[ -]?in|password|credential',text,re.I)),"payment_indicators":bool(re.search(r'payment|card|wallet|bank',text,re.I)),"scripts":re.findall(r'<script[^>]+src=["\']([^"\']+)',text,re.I)[:50],"truncated":total>=1000000}
     except Exception as exc: return {"status":"unavailable","reason":type(exc).__name__}
 
 def collect(url,domain):

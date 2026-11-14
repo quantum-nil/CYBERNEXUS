@@ -24,6 +24,7 @@ import SecurityFindingsPanel from "./components/SecurityFindingsPanel";
 import SecurityAuthorizationPanel from "./components/SecurityAuthorizationPanel";
 import WalletIntegrationPanel from "./components/WalletIntegrationPanel";
 import EvidenceManagementPanel from "./components/EvidenceManagementPanel";
+import EvidenceTracePanel from "./components/EvidenceTracePanel";
 import EmailSecurityPanel from "./components/EmailSecurityPanel";
 import MessageHistoryPanel from "./components/MessageHistoryPanel";
 import MessageReportsPanel from "./components/MessageReportsPanel";
@@ -179,7 +180,7 @@ export default function App() {
           {tab === "ML lifecycle status" && <MLLifecycleStatusPanel />}
           {tab === "Scan history" && <HistoryPanel items={history} />}{" "}
           {tab === "Community intel" && <Community />}
-          {tab === "Threat correlation" && <Module4Panel />}
+          {tab === "Threat correlation" && <Module4Panel scan={result || history[0]} />}
         </section>
       </div>
     </main>
@@ -214,7 +215,7 @@ function OverviewLanding({ history, result, url, setUrl, scan, busy, error, setT
     {result && <ScanResult data={result} />}
   </div>;
 }
-function Module4Panel() {
+function Module4Panel({ scan }: { scan?: any }) {
   return (
     <div className="space-y-6">
       <div className="glass rounded-3xl border border-cyan/20 p-6">
@@ -224,6 +225,7 @@ function Module4Panel() {
           incidents and campaigns. Correlation is separate from a confirmed malicious verdict.
         </p>
       </div>
+      <EvidenceTracePanel scanId={scan?.id} />
       <WalletIntegrationPanel />
       <EvidenceManagementPanel />
       <Correlation />
@@ -615,6 +617,7 @@ function ScanResult({ data }: any) {
       <BrandPanel data={data.domain_intelligence?.domain} />
       <RdapPanel data={data.domain_intelligence?.rdap} />
       <InfrastructurePanel data={data.domain_intelligence?.infrastructure} />
+      <GoogleSafeBrowsingPanel />
       <ExternalProvidersPanel />
       <UrlhausPanel />
       {(data.phishing.evidence || []).map((x: any, i: number) => (
@@ -836,11 +839,13 @@ function VirusTotalPanel({ data }: any) {
     </div>
   );
 }
-function Card({ title, value }: any) {
+function Card({ title, value, children }: any) {
   return (
     <div className="rounded-2xl border border-line bg-ink/40 p-4">
       <div className="text-xs text-slate-400">{title}</div>
       <div className="mt-3 text-sm font-medium capitalize">{value}</div>
+      {children}
+      {title === "Threat matches" && !children && <SafeBrowsingInfo />}
     </div>
   );
 }
@@ -1043,9 +1048,9 @@ function Correlation() {
     </div>
   );
 }
-function SafeBrowsingInfo() {
+function SafeBrowsingInfo({ currentScan }: { currentScan?: any }) {
   const [status, setStatus] = useState<any>();
-  const [latest, setLatest] = useState<any>();
+  const [latest, setLatest] = useState<any>(currentScan);
   const [busy, setBusy] = useState(false);
   async function load(force = false) {
     setBusy(true);
@@ -1058,7 +1063,7 @@ function SafeBrowsingInfo() {
         api("/providers/google-safe-browsing/latest"),
       ]);
       setStatus(config);
-      setLatest(scan);
+      setLatest(scan || currentScan);
     } catch (error: any) {
       setStatus({ connection_status: "UNKNOWN", error: error.message });
     } finally {
@@ -1067,11 +1072,11 @@ function SafeBrowsingInfo() {
   }
   useEffect(() => {
     load();
-  }, []);
+  }, [currentScan]);
   const state = status?.connection_status || "UNKNOWN";
-  const evidence = latest?.evidence || {};
-  const categories = evidence.threat_categories || [];
-  const matches = evidence.matches || [];
+  const evidence = latest?.evidence || latest || {};
+  const categories = evidence.threat_categories || latest?.threat_categories || [];
+  const matches = evidence.matches || latest?.matches || [];
   return (
     <div className="mt-3 rounded-lg border border-cyan/20 bg-cyan/5 p-3 text-[11px] leading-relaxed text-slate-400">
       <div className="flex items-center justify-between gap-2">
@@ -1123,6 +1128,105 @@ function SafeBrowsingInfo() {
       >
         {busy ? "Checking..." : "Check connection"}
       </button>
+    </div>
+  );
+}
+function GoogleSafeBrowsingPanel() {
+  const [status, setStatus] = useState<any>();
+  const [latest, setLatest] = useState<any>();
+  const [busy, setBusy] = useState(false);
+  async function refresh(force = false) {
+    setBusy(true);
+    try {
+      const [config, scan] = await Promise.all([
+        api(
+          `/providers/google-safe-browsing/${force ? "verify" : "status"}${force ? "?force=true" : ""}`,
+          { method: force ? "POST" : "GET" },
+        ),
+        api("/providers/google-safe-browsing/latest"),
+      ]);
+      setStatus(config);
+      setLatest(scan);
+    } catch (error: any) {
+      setStatus({ connection_status: "UNKNOWN", error: error.message });
+    } finally {
+      setBusy(false);
+    }
+  }
+  useEffect(() => {
+    refresh();
+  }, []);
+  const state = status?.connection_status || "UNKNOWN";
+  const evidence = latest?.evidence || latest || {};
+  const categories = evidence.threat_categories || latest?.threat_categories || [];
+  const matches = evidence.matches || latest?.matches || [];
+  return (
+    <div className="mt-5 rounded-2xl border border-cyan/20 bg-cyan/5 p-5">
+      <div className="flex items-center justify-between">
+        <div>
+          <h3 className="text-base font-semibold text-cyan">
+            Google Safe Browsing
+          </h3>
+          <p className="mt-1 text-xs text-slate-400">
+            Real-time reputation and threat list lookup via Safe Browsing v4 API.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => refresh(true)}
+          disabled={busy}
+          className="rounded-md border border-cyan/30 px-3 py-1 text-xs text-cyan"
+        >
+          {busy ? "Checking..." : "Verify connection"}
+        </button>
+      </div>
+      <div className="mt-4 grid gap-3 md:grid-cols-3">
+        <div className="rounded-xl border border-line p-4">
+          <div className="text-xs text-slate-500">Connection</div>
+          <div className="mt-2 text-sm font-semibold">{state}</div>
+        </div>
+        <div className="rounded-xl border border-line p-4">
+          <div className="text-xs text-slate-500">Latest verdict</div>
+          <div className="mt-2 text-sm font-semibold">
+            {latest?.verdict || "Unknown"}
+          </div>
+        </div>
+        <div className="rounded-xl border border-line p-4">
+          <div className="text-xs text-slate-500">API key</div>
+          <div className="mt-2 text-sm font-semibold">
+            {status?.api_key_configured ? "Configured" : "Not configured"}
+          </div>
+        </div>
+      </div>
+      <p className="mt-3 text-xs text-slate-400">
+        A clean result means no match was returned by Google; it does not prove
+        the website is safe. Missing credentials or provider errors remain
+        unknown, not clean.
+      </p>
+      {categories.length > 0 && (
+        <div className="mt-2 text-xs text-danger">
+          Threat categories: {categories.join(", ")}
+        </div>
+      )}
+      {matches.map((match: any, i: number) => (
+        <div key={i} className="mt-1 text-xs text-danger">
+          {match.threat_type} · {match.platform_type || "platform unavailable"}
+        </div>
+      ))}
+      {latest?.checked_at && (
+        <p className="mt-2 text-xs text-slate-500">
+          Checked: {new Date(latest.checked_at).toLocaleString()}
+        </p>
+      )}
+      {status?.connection_status === "NOT_CONFIGURED" && (
+        <p className="mt-3 text-sm text-danger">
+          GOOGLE_SAFE_BROWSING_API_KEY is not configured. This provider is
+          unknown, not clean.
+        </p>
+      )}
+      {status?.error && (
+        <p className="mt-3 text-sm text-danger">{status.error}</p>
+      )}
     </div>
   );
 }
