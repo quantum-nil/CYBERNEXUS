@@ -1425,7 +1425,7 @@ def verify_threat_intelligence_blockchain_receipt(report_id: int, revision_id: i
     except LookupError as exc: raise HTTPException(404, str(exc)) from exc
     revision = db.query(ReportRevision).filter_by(id=revision_id, report_id=report.id).first()
     if not revision: raise HTTPException(404, "revision not found")
-    try: return verify_external_receipt(db, revision, payload.get("transaction_hash"), principal.user_id)
+    try: return EVMBlockchainAdapter().verify_existing_transaction(db, report, revision, payload.get("transaction_hash"))
     except (ValueError, httpx.HTTPError) as exc:
         db.rollback(); raise HTTPException(502, "blockchain receipt verification failed") from exc
 

@@ -67,3 +67,14 @@ npx hardhat verify --network sepolia DEPLOYED_ADDRESS DEPLOYER_ADDRESS
 ```
 
 Never claim deployment success from a printed or copied address alone; verify the transaction receipt and address on Sepolia.
+
+## Verified Sepolia deployment
+
+The current verified test deployment is:
+
+- Network: Ethereum Sepolia (`11155111`)
+- Contract: `0xa3642e05845BDe408B242A3D8B1eB05f0116C946`
+- Deployment transaction: `0x2e5068093a39d354b018a485798a60b7c57870a307f7a4fdcf58e54b1305ba23`
+- Deployment block: `12131482`
+
+The backend adapter was verified against successful report and revision receipts. It checks the transaction status, configured contract, confirmation count, and matching commitment event before persisting `CONFIRMED`.
