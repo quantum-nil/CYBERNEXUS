@@ -1,4 +1,5 @@
 import hashlib
+import base64
 import json
 import re
 import secrets
@@ -206,12 +207,15 @@ def auth_oidc_start(response: Response):
         raise HTTPException(503, "OIDC authorization URL is not configured")
     state = secrets.token_urlsafe(32)
     nonce = secrets.token_urlsafe(32)
+    code_verifier = secrets.token_urlsafe(64)
+    code_challenge = base64.urlsafe_b64encode(hashlib.sha256(code_verifier.encode("ascii")).digest()).rstrip(b"=").decode("ascii")
     parsed = urlparse(settings.oidc_authorization_url)
     query = dict(parse_qsl(parsed.query, keep_blank_values=True))
-    query.update({"client_id": settings.oidc_client_id, "response_type": "code", "scope": settings.oidc_scopes, "redirect_uri": settings.oidc_redirect_uri, "state": state, "nonce": nonce})
+    query.update({"client_id": settings.oidc_client_id, "response_type": "code", "scope": settings.oidc_scopes, "redirect_uri": settings.oidc_redirect_uri, "state": state, "nonce": nonce, "code_challenge": code_challenge, "code_challenge_method": "S256"})
     redirect = RedirectResponse(urlunparse(parsed._replace(query=urlencode(query))))
     redirect.set_cookie("cybernexus_oidc_state", state, max_age=600, httponly=True, secure=settings.environment.lower() == "production", samesite="lax", path="/")
     redirect.set_cookie("cybernexus_oidc_nonce", nonce, max_age=600, httponly=True, secure=settings.environment.lower() == "production", samesite="lax", path="/")
+    redirect.set_cookie("cybernexus_oidc_verifier", code_verifier, max_age=600, httponly=True, secure=settings.environment.lower() == "production", samesite="lax", path="/")
     return redirect
 
 @router.get("/auth/oidc/callback")
@@ -223,6 +227,9 @@ async def auth_oidc_callback(code: str, state: str, response: Response, request:
     if not settings.oidc_client_id or not token_url:
         raise HTTPException(503, "OIDC token exchange is not configured")
     form = {"grant_type": "authorization_code", "code": code, "client_id": settings.oidc_client_id, "redirect_uri": settings.oidc_redirect_uri}
+    code_verifier = request.cookies.get("cybernexus_oidc_verifier")
+    if code_verifier:
+        form["code_verifier"] = code_verifier
     if settings.oidc_client_secret:
         form["client_secret"] = settings.oidc_client_secret
     try:
@@ -245,6 +252,7 @@ async def auth_oidc_callback(code: str, state: str, response: Response, request:
     response.set_cookie(settings.session_cookie_name, token, max_age=settings.session_max_age_seconds, httponly=True, secure=settings.environment.lower() == "production", samesite="lax", path="/")
     response.delete_cookie("cybernexus_oidc_state", path="/")
     response.delete_cookie("cybernexus_oidc_nonce", path="/")
+    response.delete_cookie("cybernexus_oidc_verifier", path="/")
     return {"authenticated": True, "user_id": principal.user_id, "role": principal.role, "tenant_id": principal.tenant_id}
 
 @router.get("/auth/me")
