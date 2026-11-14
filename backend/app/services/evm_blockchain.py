@@ -72,7 +72,7 @@ class EVMBlockchainAdapter:
             for event in events:
                 args = event.get("args", {})
                 if bytes(args.get("reportId", b"")) == bytes(report_id) and bytes(args.get("commitment", b"")) == bytes(commitment):
-                    return {"event": event_name, "report_id": report_id, "commitment": commitment, "log_index": event.get("logIndex")}
+                    return {"event": event_name, "report_id": Web3.to_hex(report_id), "commitment": Web3.to_hex(commitment), "log_index": event.get("logIndex")}
         return None
 
     def submit_revision(self, db, report: ThreatIntelligenceReport, revision: ReportRevision, metadata=""):
@@ -100,6 +100,23 @@ class EVMBlockchainAdapter:
         tx_hash = self.w3.eth.send_raw_transaction(signed.raw_transaction)
         existing.tx_hash = tx_hash.hex(); existing.status="SUBMITTED"; existing.submitted_at=_now(); existing.last_checked_at=_now(); db.commit()
         return self.refresh_transaction(db, existing.id)
+
+    def verify_existing_transaction(self, db, report: ThreatIntelligenceReport, revision: ReportRevision, transaction_hash: str):
+        """Verify an externally submitted transaction without signing or resubmitting it."""
+        if not re.fullmatch(r"0x[0-9a-fA-F]{64}", str(transaction_hash or "")):
+            raise ValueError("transaction hash must be a hexadecimal 0x value")
+        network_id = self._network_id(db)
+        row = db.query(BlockchainTransaction).filter_by(network_id=network_id, revision_id=revision.id).first()
+        if row and row.tx_hash and row.tx_hash.lower() != transaction_hash.lower():
+            raise ValueError("a different transaction is already associated with this revision")
+        if not row:
+            row = BlockchainTransaction(network_id=network_id, revision_id=revision.id, report_id=report.id, commitment_id=str(revision.id), status="SUBMITTED", confirmation_status="PENDING")
+            db.add(row)
+        row.tx_hash = transaction_hash.lower()
+        row.status = "SUBMITTED"
+        row.last_checked_at = _now()
+        db.commit()
+        return self.refresh_transaction(db, row.id)
 
     def _network_id(self, db):
         network = db.query(BlockchainNetwork).filter_by(network_key=_network_key()).first()

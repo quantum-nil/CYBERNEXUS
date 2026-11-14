@@ -12,6 +12,7 @@ backend/.env
 __pycache__/
 *.py[cod]
 digital_trust.db
+.cybernexus-local-runtime.db
 *.sqlite
 *.sqlite3
 frontend/node_modules/
@@ -23,7 +24,8 @@ models/production_pointer.json
 frontend/test-results/
 frontend/playwright-*.png
 *.tsbuildinfo
-
+.vercel
+.env*
 *.db
 *.db-*
 *.bak
