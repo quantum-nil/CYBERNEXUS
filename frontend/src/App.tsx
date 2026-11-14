@@ -24,6 +24,7 @@ import SecurityFindingsPanel from "./components/SecurityFindingsPanel";
 import SecurityAuthorizationPanel from "./components/SecurityAuthorizationPanel";
 import WalletIntegrationPanel from "./components/WalletIntegrationPanel";
 import EvidenceManagementPanel from "./components/EvidenceManagementPanel";
+import EvidenceTracePanel from "./components/EvidenceTracePanel";
 import EmailSecurityPanel from "./components/EmailSecurityPanel";
 import MessageHistoryPanel from "./components/MessageHistoryPanel";
 import MessageReportsPanel from "./components/MessageReportsPanel";
@@ -179,7 +180,7 @@ export default function App() {
           {tab === "ML lifecycle status" && <MLLifecycleStatusPanel />}
           {tab === "Scan history" && <HistoryPanel items={history} />}{" "}
           {tab === "Community intel" && <Community />}
-          {tab === "Threat correlation" && <Module4Panel />}
+          {tab === "Threat correlation" && <Module4Panel scan={result || history[0]} />}
         </section>
       </div>
     </main>
@@ -214,7 +215,7 @@ function OverviewLanding({ history, result, url, setUrl, scan, busy, error, setT
     {result && <ScanResult data={result} />}
   </div>;
 }
-function Module4Panel() {
+function Module4Panel({ scan }: { scan?: any }) {
   return (
     <div className="space-y-6">
       <div className="glass rounded-3xl border border-cyan/20 p-6">
@@ -224,6 +225,7 @@ function Module4Panel() {
           incidents and campaigns. Correlation is separate from a confirmed malicious verdict.
         </p>
       </div>
+      <EvidenceTracePanel scanId={scan?.id} />
       <WalletIntegrationPanel />
       <EvidenceManagementPanel />
       <Correlation />
