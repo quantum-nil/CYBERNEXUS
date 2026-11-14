@@ -3,14 +3,16 @@ import json
 import re
 import secrets
 import httpx
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 from datetime import datetime, timezone
 from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, Header, UploadFile, File, BackgroundTasks, Query, Response, Request
+from fastapi.responses import RedirectResponse
 from sqlalchemy import asc, case, cast, desc, func, or_, String as SQLString
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from backend.app.db.session import get_db, SessionLocal
-from backend.app.models.models import Scan, CommunityReport, DomainIntelligence, ProviderVerdict, ThreatIndicator, RedirectHop, BrandRegistry, BrandVerificationEvidence, BrandVerificationChallenge, BrandVerificationAudit, BrandLogoAsset, BrandImageReference, WebsiteImageCandidate, ImageComparison, CertificateRecord, CertificateChainLink, CertificateValidationResult, CertificateRevocationResult, CertificateRevocationJob, CertificateTransparencyEntry, CertificateTransparencyAnomaly, CertificateRiskAssessment, EmailAnalysis, EmailHeader, EmailAuthenticationResult, EmailHeaderAnomaly, EmailRawMessage, EmailSmtpContext, EmailVerificationRun, MessageAnalysisRecord, MessageIndicatorResult, MessageDomainSpoofingFinding, EmailProviderRegistry, ContactRiskAssessment, IntelligenceVerification, BackgroundTaskRun, MessageAnalysisMetadata, MessageContent, MessageAnalysisEvent, AppUser, LegacyIdentityLink, MessageReview, MessageReviewAudit, MessageReviewFeedback, MLDatasetVersion, MLModelVersion, MLDeploymentHistory, MLTrainingRun, SecurityAssessment, SecurityFinding, RemediationRecord, SecurityAuthorization, AssessmentEvent, ThreatIntelligenceReport, ReportRevision, WalletChallenge, WalletIdentity, DigitalSignature, EvidenceObject, FindingEvidenceProvenance, Tenant, TenantMember, RateLimitRecord, AbuseEvent
+from backend.app.models.models import Scan, CommunityReport, DomainIntelligence, ProviderVerdict, ThreatIndicator, RedirectHop, BrandRegistry, BrandVerificationEvidence, BrandVerificationChallenge, BrandVerificationAudit, BrandLogoAsset, BrandImageReference, WebsiteImageCandidate, ImageComparison, CertificateRecord, CertificateChainLink, CertificateValidationResult, CertificateRevocationResult, CertificateRevocationJob, CertificateTransparencyEntry, CertificateTransparencyAnomaly, CertificateRiskAssessment, EmailAnalysis, EmailHeader, EmailAuthenticationResult, EmailHeaderAnomaly, EmailRawMessage, EmailSmtpContext, EmailVerificationRun, MessageAnalysisRecord, MessageIndicatorResult, MessageDomainSpoofingFinding, EmailProviderRegistry, ContactRiskAssessment, IntelligenceVerification, BackgroundTaskRun, MessageAnalysisMetadata, MessageContent, MessageAnalysisEvent, AppUser, LegacyIdentityLink, MessageReview, MessageReviewAudit, MessageReviewFeedback, MLDatasetVersion, MLModelVersion, MLDeploymentHistory, MLTrainingRun, SecurityAssessment, SecurityFinding, RemediationRecord, SecurityAuthorization, AssessmentEvent, ThreatIntelligenceReport, ReportRevision, WalletChallenge, WalletIdentity, DigitalSignature, EvidenceObject, FindingEvidenceProvenance, Tenant, TenantMember, RateLimitRecord, AbuseEvent, AuditLog
 from backend.app.schemas.schemas import ScanRequest, ReportRequest, LinkRevisionRequest, VerifyHashRequest
 from backend.app.services.scanner import scan
 from backend.app.services.scanner import _destination_providers
@@ -40,7 +42,7 @@ from backend.app.engines.contact_intelligence import phone_analysis, phone_provi
 from backend.app.engines.email_authentication_verification import verify as verify_email_authentication
 from backend.app.engines import email_security_investigation
 from backend.app.services.cache import health as cache_health
-from backend.app.services.auth import Principal, get_current_principal, sync_user, verify_token
+from backend.app.services.auth import Principal, get_current_principal, sync_user, verify_token, issue_jwt_token, record_audit_event
 from backend.app.db.session import engine
 from backend.app.engines.google_safe_browsing import configuration_status as google_safe_browsing_configuration, verify_connection as verify_google_safe_browsing
 from backend.app.engines.virustotal import configuration_status as virustotal_configuration, lookup_url as lookup_virustotal_url, submit_url as submit_virustotal_url, poll_analysis as poll_virustotal_analysis
@@ -189,26 +191,197 @@ def health():
 
 @router.get("/auth/config")
 def auth_config():
-    return {"provider": "OIDC", "required": settings.auth_required, "configured": bool(settings.oidc_issuer_url and settings.oidc_audience and (settings.oidc_jwks_url or settings.oidc_issuer_url)), "authorization_url": settings.oidc_authorization_url or None, "client_id": settings.oidc_client_id or None, "redirect_uri": settings.oidc_redirect_uri, "scopes": settings.oidc_scopes.split()}
+    configured = bool(settings.oidc_issuer_url and settings.oidc_audience and settings.oidc_client_id and (settings.oidc_jwks_url or settings.oidc_issuer_url))
+    configuration_error = None
+    if settings.auth_required and not configured:
+        configuration_error = "OIDC issuer, audience, client ID, and signing keys must be configured before organization sign-in can be used."
+    if settings.auth_required and not settings.oidc_authorization_url:
+        configuration_error = "OIDC authorization URL is not configured for this deployment."
+    token_url = settings.oidc_token_url or ((settings.oidc_issuer_url.rstrip("/") + "/protocol/openid-connect/token") if settings.oidc_issuer_url else None)
+    return {"provider": "OIDC", "required": settings.auth_required, "configured": configured, "configuration_error": configuration_error, "authorization_url": settings.oidc_authorization_url or None, "token_url": token_url, "client_id": settings.oidc_client_id or None, "redirect_uri": settings.oidc_redirect_uri, "scopes": settings.oidc_scopes.split()}
+
+@router.get("/auth/oidc/start")
+def auth_oidc_start(response: Response):
+    if not settings.oidc_authorization_url:
+        raise HTTPException(503, "OIDC authorization URL is not configured")
+    state = secrets.token_urlsafe(32)
+    nonce = secrets.token_urlsafe(32)
+    parsed = urlparse(settings.oidc_authorization_url)
+    query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    query.update({"client_id": settings.oidc_client_id, "response_type": "code", "scope": settings.oidc_scopes, "redirect_uri": settings.oidc_redirect_uri, "state": state, "nonce": nonce})
+    redirect = RedirectResponse(urlunparse(parsed._replace(query=urlencode(query))))
+    redirect.set_cookie("cybernexus_oidc_state", state, max_age=600, httponly=True, secure=settings.environment.lower() == "production", samesite="lax", path="/")
+    redirect.set_cookie("cybernexus_oidc_nonce", nonce, max_age=600, httponly=True, secure=settings.environment.lower() == "production", samesite="lax", path="/")
+    return redirect
+
+@router.get("/auth/oidc/callback")
+async def auth_oidc_callback(code: str, state: str, response: Response, request: Request, db: Session = Depends(get_db)):
+    expected_state = request.cookies.get("cybernexus_oidc_state")
+    if not expected_state or not secrets.compare_digest(expected_state, state):
+        raise HTTPException(400, "Invalid OIDC state")
+    token_url = settings.oidc_token_url or (settings.oidc_issuer_url.rstrip("/") + "/protocol/openid-connect/token")
+    if not settings.oidc_client_id or not token_url:
+        raise HTTPException(503, "OIDC token exchange is not configured")
+    form = {"grant_type": "authorization_code", "code": code, "client_id": settings.oidc_client_id, "redirect_uri": settings.oidc_redirect_uri}
+    if settings.oidc_client_secret:
+        form["client_secret"] = settings.oidc_client_secret
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            token_response = await client.post(token_url, data=form)
+            token_response.raise_for_status()
+            tokens = token_response.json()
+    except Exception as exc:
+        raise HTTPException(502, "OIDC token exchange failed") from exc
+    token = tokens.get("id_token") or tokens.get("access_token")
+    if not token:
+        raise HTTPException(502, "OIDC provider returned no usable token")
+    claims = verify_token(token)
+    expected_nonce = request.cookies.get("cybernexus_oidc_nonce")
+    if expected_nonce and claims.get("nonce") and not secrets.compare_digest(expected_nonce, str(claims.get("nonce"))):
+        raise HTTPException(401, "Invalid OIDC nonce")
+    principal = sync_user(db, claims)
+    record_audit_event(db=db, user_id=principal.user_id, action="AUTH_LOGIN", resource_type="auth", resource_id=principal.user_id, details={"provider": "OIDC", "tenant_id": principal.tenant_id}, tenant_id=principal.tenant_id, ip_address=request.client.host if request.client else None)
+    db.commit()
+    response.set_cookie(settings.session_cookie_name, token, max_age=settings.session_max_age_seconds, httponly=True, secure=settings.environment.lower() == "production", samesite="lax", path="/")
+    response.delete_cookie("cybernexus_oidc_state", path="/")
+    response.delete_cookie("cybernexus_oidc_nonce", path="/")
+    return {"authenticated": True, "user_id": principal.user_id, "role": principal.role, "tenant_id": principal.tenant_id}
 
 @router.get("/auth/me")
 def auth_me(principal: Principal = Depends(get_current_principal)):
     if not principal.authenticated: return {"authenticated": False, "mode": "development"}
-    return {"authenticated": True, "user_id": principal.user_id, "external_subject": principal.external_subject, "role": principal.role}
+    return {
+        "authenticated": True,
+        "user_id": principal.user_id,
+        "external_subject": principal.external_subject,
+        "email": principal.email or principal.external_subject,
+        "role": principal.role,
+        "tenant_id": principal.tenant_id
+    }
+
+@router.post("/auth/login")
+def auth_login(payload: dict, response: Response, request: Request, db: Session = Depends(get_db)):
+    if settings.auth_required or settings.environment.lower() == "production":
+        raise HTTPException(403, "Local sign-in is disabled; use the configured OIDC provider")
+    email = str(payload.get("email") or "").strip().lower()
+    if not email:
+        raise HTTPException(400, "Email is required")
+    role = str(payload.get("role") or "member").strip().lower()
+    if role not in {"admin", "analyst", "member"}:
+        role = "member"
+    tenant_id = str(payload.get("tenant_id") or "tenant_default").strip()
+    name = str(payload.get("name") or email.split("@")[0]).strip()
+
+    # Generate cryptographically signed JWT with tenant and role claims
+    token = issue_jwt_token(user_id=email, email=email, role=role, name=name, tenant_id=tenant_id)
+    claims = verify_token(token)
+    principal = sync_user(db, claims)
+
+    # Record login in audit log
+    client_ip = request.client.host if request.client else "127.0.0.1"
+    record_audit_event(
+        db=db,
+        user_id=principal.user_id,
+        action="AUTH_LOGIN",
+        resource_type="auth",
+        resource_id=principal.user_id,
+        details={"email": email, "role": principal.role, "tenant_id": principal.tenant_id, "provider": "local_jwt"},
+        tenant_id=principal.tenant_id,
+        ip_address=client_ip
+    )
+    db.commit()
+
+    # Issue secure HttpOnly session cookie
+    response.set_cookie(
+        settings.session_cookie_name,
+        token,
+        max_age=settings.session_max_age_seconds,
+        httponly=True,
+        secure=settings.environment.lower() == "production",
+        samesite="lax",
+        path="/"
+    )
+    return {
+        "authenticated": True,
+        "token": token,
+        "user": {
+            "user_id": principal.user_id,
+            "email": email,
+            "name": name,
+            "role": principal.role,
+            "tenant_id": principal.tenant_id
+        }
+    }
 
 @router.post("/auth/session")
 def auth_session(response: Response, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
     if not authorization or not authorization.startswith("Bearer "): raise HTTPException(401, "Bearer token required")
     token = authorization[7:].strip(); principal = sync_user(db, verify_token(token)); db.commit(); response.set_cookie(settings.session_cookie_name, token, max_age=settings.session_max_age_seconds, httponly=True, secure=settings.environment.lower() == "production", samesite="lax", path="/")
-    return {"authenticated": True, "user_id": principal.user_id, "role": principal.role}
+    return {"authenticated": True, "user_id": principal.user_id, "role": principal.role, "tenant_id": principal.tenant_id}
 
 @router.post("/auth/logout")
-def auth_logout(response: Response):
-    response.delete_cookie(settings.session_cookie_name, path="/"); return {"logged_out": True}
+def auth_logout(response: Response, request: Request, principal: Principal = Depends(get_current_principal), db: Session = Depends(get_db)):
+    if principal.authenticated:
+        client_ip = request.client.host if request.client else "127.0.0.1"
+        record_audit_event(
+            db=db,
+            user_id=principal.user_id,
+            action="AUTH_LOGOUT",
+            resource_type="auth",
+            resource_id=principal.user_id,
+            details={"email": principal.email or principal.external_subject},
+            tenant_id=principal.tenant_id,
+            ip_address=client_ip
+        )
+        db.commit()
+    response.delete_cookie(settings.session_cookie_name, path="/")
+    return {"logged_out": True}
+
+@router.get("/audit-logs")
+def list_audit_logs(
+    principal: Principal = Depends(get_current_principal),
+    db: Session = Depends(get_db),
+    limit: int = 50,
+    action: str | None = None
+):
+    if not principal.authenticated and settings.auth_required:
+        raise HTTPException(401, "Authentication required to access audit logs")
+    query = db.query(AuditLog)
+    # Tenant isolation: unless admin, only view own tenant's logs
+    if principal.role != "admin" or not principal.authenticated:
+        query = query.filter(AuditLog.tenant_id == principal.tenant_id)
+    if action:
+        query = query.filter(AuditLog.action == action)
+    logs = query.order_by(AuditLog.timestamp.desc()).limit(min(limit, 200)).all()
+    return [
+        {
+            "id": log.id,
+            "tenant_id": log.tenant_id,
+            "user_id": log.user_id,
+            "action": log.action,
+            "resource_type": log.resource_type,
+            "resource_id": log.resource_id,
+            "details": json.loads(log.details_json) if log.details_json else {},
+            "ip_address": log.ip_address,
+            "timestamp": log.timestamp.isoformat() if log.timestamp else None
+        }
+        for log in logs
+    ]
+
+@router.get("/tenants")
+def list_tenants(db: Session = Depends(get_db)):
+    tenants = db.query(Tenant).all()
+    if not tenants:
+        return [
+            {"id": "tenant_default", "name": "CYBERNEXUS Enterprise Tenant"},
+            {"id": "tenant_soc", "name": "Security Operations Center (SOC)"},
+            {"id": "tenant_redteam", "name": "Adversary Simulation / Red Team"}
+        ]
+    return [{"id": t.id, "name": t.name} for t in tenants]
 
 @router.get("/auth/permissions")
 def auth_permissions(principal: Principal = Depends(get_current_principal)):
-    return {"authenticated": principal.authenticated, "user_id": principal.user_id, "role": principal.role, "capabilities": {"passive_scans": True, "active_scans": principal.authenticated, "admin_operations": principal.role == "admin", "private_evidence": principal.authenticated}}
+    return {"authenticated": principal.authenticated, "user_id": principal.user_id, "role": principal.role, "tenant_id": principal.tenant_id, "capabilities": {"passive_scans": True, "active_scans": principal.authenticated, "admin_operations": principal.role == "admin", "private_evidence": principal.authenticated}}
 
 @router.post("/privacy/redact")
 def privacy_redact(payload: dict, principal: Principal = Depends(get_current_principal)):
@@ -915,6 +1088,35 @@ def get_scan(scan_id: int, principal: Principal = Depends(get_current_principal)
         result_data["evidence_provenance"] = [serialize_provenance(p) for p in provenance_rows]
     return {"id": row.id, **result_data, "created_at": row.created_at}
 
+@router.delete("/scans/{scan_id}")
+def delete_scan(scan_id: int, principal: Principal = Depends(get_current_principal), db: Session = Depends(get_db)):
+    row = db.get(Scan, scan_id)
+    if not row:
+        raise HTTPException(404, "Scan not found")
+    if principal.role != "admin" and row.scan_mode != "PUBLIC_PASSIVE" and row.created_by != principal.user_id and principal.authenticated:
+        raise HTTPException(403, "Access to delete scan is restricted to its owner or administrator")
+
+    db.query(FindingEvidenceProvenance).filter(FindingEvidenceProvenance.scan_id == scan_id).delete(synchronize_session=False)
+    db.query(RedirectHop).filter(RedirectHop.scan_id == scan_id).delete(synchronize_session=False)
+    db.query(ProviderVerdict).filter(ProviderVerdict.scan_id == scan_id).delete(synchronize_session=False)
+    db.query(DomainIntelligence).filter(DomainIntelligence.scan_id == scan_id).delete(synchronize_session=False)
+    db.query(CertificateRecord).filter(CertificateRecord.scan_id == scan_id).delete(synchronize_session=False)
+
+    if principal.authenticated:
+        record_audit_event(
+            db=db,
+            user_id=principal.user_id,
+            action="SCAN_DELETED",
+            resource_type="scan",
+            resource_id=str(scan_id),
+            details={"url": row.url, "domain": row.domain},
+            tenant_id=principal.tenant_id
+        )
+
+    db.delete(row)
+    db.commit()
+    return {"deleted": True, "scan_id": scan_id}
+
 @router.get("/evidence-provenance")
 def list_evidence_provenance(
     scan_id: int | None = None,
@@ -1259,7 +1461,10 @@ def delete_email_analysis(analysis_id: int, principal: Principal = Depends(get_c
     review = db.query(MessageReview).filter(MessageReview.email_analysis_id == analysis_id).first()
     if review:
         db.query(MessageReviewFeedback).filter(MessageReviewFeedback.review_id == review.id).delete(synchronize_session=False); db.query(MessageReviewAudit).filter(MessageReviewAudit.review_id == review.id).delete(synchronize_session=False); db.delete(review)
-    db.query(MessageAnalysisEvent).filter(MessageAnalysisEvent.email_analysis_id == analysis_id).delete(synchronize_session=False); db.query(MessageIndicatorResult).filter(MessageIndicatorResult.email_analysis_id == analysis_id).delete(synchronize_session=False); db.query(MessageDomainSpoofingFinding).filter(MessageDomainSpoofingFinding.email_analysis_id == analysis_id).delete(synchronize_session=False); db.query(ContactRiskAssessment).filter(ContactRiskAssessment.email_analysis_id == analysis_id).delete(synchronize_session=False); db.query(EmailHeader).filter(EmailHeader.analysis_id == analysis_id).delete(synchronize_session=False); db.query(EmailAuthenticationResult).filter(EmailAuthenticationResult.analysis_id == analysis_id).delete(synchronize_session=False); db.query(EmailHeaderAnomaly).filter(EmailHeaderAnomaly.analysis_id == analysis_id).delete(synchronize_session=False); db.query(EmailRawMessage).filter(EmailRawMessage.analysis_id == analysis_id).delete(synchronize_session=False); db.query(EmailVerificationRun).filter(EmailVerificationRun.analysis_id == analysis_id).delete(synchronize_session=False); db.query(EmailSmtpContext).filter(EmailSmtpContext.analysis_id == analysis_id).delete(synchronize_session=False); db.delete(meta); db.delete(row); db.commit(); return {"deleted": True, "analysis_id": analysis_id}
+    db.query(MessageAnalysisEvent).filter(MessageAnalysisEvent.email_analysis_id == analysis_id).delete(synchronize_session=False); db.query(MessageIndicatorResult).filter(MessageIndicatorResult.email_analysis_id == analysis_id).delete(synchronize_session=False); db.query(MessageDomainSpoofingFinding).filter(MessageDomainSpoofingFinding.email_analysis_id == analysis_id).delete(synchronize_session=False); db.query(ContactRiskAssessment).filter(ContactRiskAssessment.email_analysis_id == analysis_id).delete(synchronize_session=False); db.query(EmailHeader).filter(EmailHeader.analysis_id == analysis_id).delete(synchronize_session=False); db.query(EmailAuthenticationResult).filter(EmailAuthenticationResult.analysis_id == analysis_id).delete(synchronize_session=False); db.query(EmailHeaderAnomaly).filter(EmailHeaderAnomaly.analysis_id == analysis_id).delete(synchronize_session=False); db.query(EmailRawMessage).filter(EmailRawMessage.analysis_id == analysis_id).delete(synchronize_session=False); db.query(EmailVerificationRun).filter(EmailVerificationRun.analysis_id == analysis_id).delete(synchronize_session=False); db.query(EmailSmtpContext).filter(EmailSmtpContext.analysis_id == analysis_id).delete(synchronize_session=False)
+    if principal.authenticated:
+        record_audit_event(db, principal.user_id, "MESSAGE_ANALYSIS_DELETED", "email_analysis", str(analysis_id), {"kind": "EML"}, principal.tenant_id)
+    db.delete(meta); db.delete(row); db.commit(); return {"deleted": True, "analysis_id": analysis_id}
 
 @router.get("/message-analysis/history")
 def message_analysis_history(page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100), search: str | None = Query(default=None), risk: str | None = Query(default=None), input_type: str | None = Query(default=None), provider: str | None = Query(default=None), principal: Principal = Depends(get_current_principal), x_admin_token: str | None = Header(default=None), db: Session = Depends(get_db)):
@@ -1296,7 +1501,10 @@ def delete_message_analysis(analysis_id: int, principal: Principal = Depends(get
     review = db.query(MessageReview).filter(MessageReview.message_analysis_id == analysis_id).first()
     if review:
         db.query(MessageReviewFeedback).filter(MessageReviewFeedback.review_id == review.id).delete(synchronize_session=False); db.query(MessageReviewAudit).filter(MessageReviewAudit.review_id == review.id).delete(synchronize_session=False); db.delete(review)
-    db.query(MessageAnalysisEvent).filter(MessageAnalysisEvent.message_analysis_id == analysis_id).delete(synchronize_session=False); db.query(MessageContent).filter(MessageContent.message_analysis_id == analysis_id).delete(synchronize_session=False); db.query(ContactRiskAssessment).filter(ContactRiskAssessment.message_analysis_id == analysis_id).delete(synchronize_session=False); db.query(MessageIndicatorResult).filter(MessageIndicatorResult.message_analysis_id == analysis_id).delete(synchronize_session=False); db.query(MessageDomainSpoofingFinding).filter(MessageDomainSpoofingFinding.message_analysis_id == analysis_id).delete(synchronize_session=False); db.delete(meta); db.delete(row); db.commit(); return {"deleted": True, "analysis_id": analysis_id}
+    db.query(MessageAnalysisEvent).filter(MessageAnalysisEvent.message_analysis_id == analysis_id).delete(synchronize_session=False); db.query(MessageContent).filter(MessageContent.message_analysis_id == analysis_id).delete(synchronize_session=False); db.query(ContactRiskAssessment).filter(ContactRiskAssessment.message_analysis_id == analysis_id).delete(synchronize_session=False); db.query(MessageIndicatorResult).filter(MessageIndicatorResult.message_analysis_id == analysis_id).delete(synchronize_session=False); db.query(MessageDomainSpoofingFinding).filter(MessageDomainSpoofingFinding.message_analysis_id == analysis_id).delete(synchronize_session=False)
+    if principal.authenticated:
+        record_audit_event(db, principal.user_id, "MESSAGE_ANALYSIS_DELETED", "message_analysis", str(analysis_id), {"kind": "TEXT"}, principal.tenant_id)
+    db.delete(meta); db.delete(row); db.commit(); return {"deleted": True, "analysis_id": analysis_id}
 
 REVIEW_STATUSES = {"PENDING_REVIEW", "UNDER_REVIEW", "ESCALATED", "CONFIRMED_MALICIOUS", "CONFIRMED_BENIGN", "INCONCLUSIVE", "CLOSED"}
 REVIEW_LABELS = {"MALICIOUS", "BENIGN", "INCONCLUSIVE"}

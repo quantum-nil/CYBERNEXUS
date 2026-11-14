@@ -39,7 +39,6 @@ export default function EvidenceProvenancePanel({
   const [error, setError] = useState("");
   const [verifiedHashes, setVerifiedHashes] = useState<Record<number, any>>({});
   const [verifyingId, setVerifyingId] = useState<number | null>(null);
-  const [expandedPayloads, setExpandedPayloads] = useState<Set<number>>(new Set());
   const [filterProvider, setFilterProvider] = useState("");
   const [filterCurrentOnly, setFilterCurrentOnly] = useState(false);
 
@@ -91,15 +90,6 @@ export default function EvidenceProvenancePanel({
     } finally {
       setVerifyingId(null);
     }
-  };
-
-  const togglePayload = (id: number) => {
-    setExpandedPayloads((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
   };
 
   const filtered = items.filter((item) => {
@@ -234,21 +224,8 @@ export default function EvidenceProvenancePanel({
                     {verifyingId === item.id ? "Verifying..." : "Verify Hash"}
                   </button>
                 )}
-                <button
-                  type="button"
-                  onClick={() => togglePayload(item.id)}
-                  className="rounded border border-line px-2.5 py-1 text-xs text-slate-400 hover:text-slate-200"
-                >
-                  {expandedPayloads.has(item.id) ? "Hide Evidence" : "Inspect Payload"}
-                </button>
               </div>
             </div>
-
-            {expandedPayloads.has(item.id) && (
-              <pre className="mt-2 max-h-48 overflow-auto rounded bg-ink/80 p-2 font-mono text-[11px] text-slate-300 border border-line">
-                {JSON.stringify(item.evidence || {}, null, 2)}
-              </pre>
-            )}
           </div>
         ))}
       </div>

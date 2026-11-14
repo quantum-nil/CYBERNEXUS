@@ -867,3 +867,15 @@ class AbuseEvent(Base):
     user_id = Column(String(128), index=True)
     details_json = Column(Text, default="{}")
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+
+class AuditLog(Base):
+    __tablename__ = "audit_logs"
+    id = Column(Integer, primary_key=True)
+    tenant_id = Column(String(64), index=True, default="default")
+    user_id = Column(String(128), index=True, nullable=False)
+    action = Column(String(64), index=True, nullable=False)
+    resource_type = Column(String(64), index=True)
+    resource_id = Column(String(128), index=True)
+    details_json = Column(Text, default="{}")
+    ip_address = Column(String(64))
+    timestamp = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)

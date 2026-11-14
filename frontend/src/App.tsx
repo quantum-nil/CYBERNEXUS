@@ -114,15 +114,19 @@ export default function App() {
         });
         if (!job || !job.task_id) throw new Error("Async scan jobs not available");
         let status = job;
+        let pollCount = 0;
         while (!["COMPLETED", "FAILED"].includes(status.status)) {
-          setScanStatus(status.status === "RUNNING" ? "Analyzing threat signals…" : "Queued…");
+          pollCount += 1;
+          setScanStatus(status.status !== "RUNNING" ? "Queued…" : pollCount > 3 ? "Checking threat providers…" : "Analyzing threat signals…");
           await new Promise((resolve) => setTimeout(resolve, 900));
           status = await api(`/scan-jobs/${job.task_id}`);
         }
         if (status.status === "FAILED") throw new Error(status.error || "Scan failed");
+        setScanStatus("Finalizing evidence…");
         x = { id: status.scan_id, ...status.result };
       } catch (jobErr) {
         // Fallback to synchronous /scans if /scan-jobs is unavailable or in test mocks
+        setScanStatus("Analyzing threat signals…");
         x = await api("/scans", {
           method: "POST",
           body: JSON.stringify({ url }),
@@ -317,6 +321,9 @@ function OverviewLanding({ history, result, url, setUrl, scan, busy, error, scan
   const levels = ["Low", "Medium", "High", "Critical"].map((level) => ({ level, count: history.filter((x: any) => (x.risk_level || x.risk?.level) === level).length }));
   const maxLevel = Math.max(1, ...levels.map((x) => x.count));
   const go = (next: string) => () => setTab(next);
+  const scanStages = ["Request submitted", "Scan job queued", "Analyzing DNS and TLS", "Checking threat providers", "Finalizing evidence"];
+  const normalizedStatus = String(scanStatus || "").toLowerCase();
+  const activeStage = normalizedStatus.includes("submitting") ? 0 : normalizedStatus.includes("queued") ? 1 : normalizedStatus.includes("provider") ? 3 : normalizedStatus.includes("final") ? 4 : normalizedStatus.includes("analyzing") || busy ? 2 : 0;
   return <div className="overview-landing">
     <section className="overview-hero">
       <div><div className="overview-eyebrow">DIGITAL TRUST INTELLIGENCE / LIVE OVERVIEW</div><h2>Security built into<br /><span>every system layer</span></h2><p>See risk signals, certificate trust, threat relationships, and investigation activity in one operational view.</p></div>
@@ -328,17 +335,11 @@ function OverviewLanding({ history, result, url, setUrl, scan, busy, error, scan
           <button aria-label="Run trust scan" disabled={busy}>{busy ? "Scanning" : "Scan"}<ArrowUpRight size={16} /></button>
         </div>
         {(scanStatus || error) && (
-          <div className="mt-2 flex items-center justify-between gap-2">
-            <small className={error ? "text-danger" : "text-slate-400"}>{error || scanStatus}</small>
-            {error && (
-              <button
-                type="button"
-                onClick={scan}
-                className="shrink-0 rounded border border-danger/40 px-2.5 py-1 text-[10px] font-semibold text-danger hover:bg-danger/20"
-              >
-                Retry
-              </button>
-            )}
+          <div className="mt-3 rounded-xl border border-line/70 bg-black/20 p-3">
+            {error ? <div className="flex items-center justify-between gap-2"><small className="text-danger">{error}</small><button type="button" onClick={scan} className="shrink-0 rounded border border-danger/40 px-2.5 py-1 text-[10px] font-semibold text-danger hover:bg-danger/20">Retry</button></div> : <>
+              <div className="mb-2 flex items-center justify-between text-[10px] uppercase tracking-wider text-cyan"><span>{scanStatus}</span><span>{Math.min(activeStage + 1, scanStages.length)}/{scanStages.length}</span></div>
+              <div className="grid gap-1 sm:grid-cols-5">{scanStages.map((stage, index) => <div key={stage} className={`flex items-center gap-1 text-[10px] ${index <= activeStage ? "text-slate-200" : "text-slate-600"}`}><span className={`h-1.5 w-1.5 shrink-0 rounded-full ${index < activeStage ? "bg-cyan" : index === activeStage ? "bg-danger animate-pulse" : "bg-slate-700"}`} />{stage}</div>)}</div>
+            </>}
           </div>
         )}
       </form>
@@ -1202,19 +1203,26 @@ function Message({ onScanUrl }: { onScanUrl?: (url: string) => void }) {
   );
 }
 function HistoryPanel({ items }: any) {
+  const [rows, setRows] = useState<any[]>(items || []);
+  const [error, setError] = useState("");
+  useEffect(() => setRows(items || []), [items]);
+  async function remove(id: number) {
+    if (!window.confirm("Delete this scan and its evidence?")) return;
+    try { await api(`/scans/${id}`, { method: "DELETE" }); setRows((current) => current.filter((item) => item.id !== id)); }
+    catch (err: any) { setError(err.message || "Scan deletion failed"); }
+  }
   return (
     <div className="glass rounded-3xl p-6">
       <h2 className="mb-5 text-xl">Investigation history</h2>
-      {items.length ? (
-        items.map((x: any) => (
+      {error && <div className="mb-4 rounded-xl border border-danger/30 bg-danger/10 p-3 text-xs text-danger">{error}</div>}
+      {rows.length ? (
+        rows.map((x: any) => (
           <div
             key={x.id}
-            className="flex justify-between border-t border-line py-4 text-sm"
+            className="flex flex-wrap items-center justify-between gap-3 border-t border-line py-4 text-sm"
           >
-            <span>{x.domain}</span>
-            <span className="text-cyan">
-              {x.risk_score}/100 · {x.risk_level}
-            </span>
+            <div><span>{x.domain || x.url}</span><div className="mt-1 text-xs text-slate-500">Scan #{x.id} · {x.scan_mode || "PUBLIC_PASSIVE"} · {x.created_at ? new Date(x.created_at).toLocaleString() : "Unknown time"}</div></div>
+            <div className="flex items-center gap-3"><span className="text-cyan">{x.risk_score}/100 · {x.risk_level || "UNKNOWN"}</span><button type="button" onClick={() => remove(x.id)} className="rounded border border-danger/40 px-3 py-1 text-xs text-danger hover:bg-danger/10">Delete</button></div>
           </div>
         ))
       ) : (

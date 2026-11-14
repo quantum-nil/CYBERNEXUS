@@ -5,6 +5,7 @@ import ContactIntelligencePanel from './components/ContactIntelligencePanel';
 import AuthPanel from './components/AuthPanel';
 import AdminReviewPanel from './components/AdminReviewPanel';
 import MLModelManagementPanel from './components/MLModelManagementPanel';
+import AuthGate from './components/AuthGate';
 import '../app/globals.css';
 
 function AppFooter() {
@@ -13,4 +14,4 @@ function AppFooter() {
 
 function ShieldIcon() { return <span className="footer-shield">◆</span>; }
 
-createRoot(document.getElementById('root')!).render(<StrictMode><Home /><AppFooter /></StrictMode>);
+createRoot(document.getElementById('root')!).render(<StrictMode><AuthGate><Home /><AppFooter /></AuthGate></StrictMode>);
