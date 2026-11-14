@@ -73,4 +73,11 @@ def production_artifact() -> Path:
             target=_safe_artifact(json.loads(POINTER.read_text()).get("artifact_location", "")); return target
         except Exception:
             pass
-    return MODEL_ROOT / "phishing_message_model.joblib"
+    default = MODEL_ROOT / "phishing_message_model.joblib"
+    if default.is_file():
+        return default
+    # Development checkouts may not include the ignored production artifact.
+    # Use the newest local candidate so status/predict remain operational while
+    # production deployment still requires an explicit approved pointer.
+    candidates = sorted((MODEL_ROOT / "candidates").glob("*.joblib"), key=lambda item: item.stat().st_mtime, reverse=True)
+    return candidates[0] if candidates else default

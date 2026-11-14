@@ -6,6 +6,7 @@ import WebsiteIdentityIntelligencePanel from './WebsiteIdentityIntelligencePanel
 import CertificateChainPanel from './CertificateChainPanel';
 import CertificateTransparencyPanel from './CertificateTransparencyPanel';
 import CertificateRiskPanel from './CertificateRiskPanel';
+import EvidenceProvenancePanel from './EvidenceProvenancePanel';
 
 const value = (item: unknown) => item === null || item === undefined || item === '' ? 'Unavailable' : String(item);
 const statusClass = (state: string) => state === 'malicious' || state === 'suspicious' ? 'text-danger' : state === 'no_match' || state === 'clean' ? 'text-emerald-300' : 'text-slate-400';
@@ -30,8 +31,105 @@ export default function DomainIntelligenceDashboard({data}: any){
     <Section title="ASN, hosting and IP reputation"><div className="space-y-3">{infra.providers?.length?infra.providers.map((item:any,i:number)=><div key={`${item.ip}-${i}`} className="rounded-xl border border-line p-3"><div className="mb-2 flex justify-between text-xs font-semibold"><span>{item.ip||'IP unavailable'}</span><span className={statusClass(item.verdict)}>{item.status||'UNKNOWN'}</span></div><div className="grid gap-2 md:grid-cols-2"><Row label="ASN" value={item.asn_number}/><Row label="Organization" value={item.asn_organization}/><Row label="Network domain" value={item.asn_domain}/><Row label="Network range" value={item.network_range}/><Row label="Network type" value={item.network_type}/><Row label="Country / region" value={`${item.country_name||item.country||'Unavailable'}${item.region?` / ${item.region}`:''}`}/><Row label="ISP" value={item.isp}/><Row label="Hosting provider" value={item.hosting_provider||item.hosting}/><Row label="Classification" value={item.hosting_classification?.classification||item.classification||'Unknown'}/><Row label="Classification confidence" value={item.hosting_classification?.confidence}/><Row label="Cloud / data center" value={`${item.cloud_provider||'Unavailable'} / ${item.data_center||'Unavailable'}`}/><Row label="Proxy/VPN/Tor" value={item.privacy}/><Row label="IP reputation" value={item.reputation||'Unavailable'}/><Row label="Sources" value={item.sources?.join(', ')}/><Row label="Checked" value={item.checked_at}/><Row label="Cache" value={item.cache||'fresh/unknown'}/></div>{item.hosting_classification?.limitation&&<div className="mt-2 text-xs text-amber-300">Plan/provider limitation: {item.hosting_classification.limitation}</div>}</div>):<div className="text-xs text-slate-500">No IP intelligence available; no network result was inferred.</div>}</div></Section>
     <Section title="External threat intelligence"><div className="grid gap-3 md:grid-cols-2">{providers.length?providers.map((item:any,i:number)=><div key={`${item.provider}-${i}`} className="rounded-xl border border-line p-3"><div className="flex justify-between gap-2"><span className="text-xs font-semibold">{item.provider}</span><span className={statusClass(item.verdict)}>{String(item.status||'unknown').toUpperCase()}</span></div><div className="mt-2 grid gap-1 text-xs text-slate-400"><span>Verdict: <b className={statusClass(item.verdict)}>{item.verdict||'UNKNOWN'}</b></span><span>Categories: {item.threat_categories?.join(', ')||'Unavailable'}</span><span>Detections: {item.malicious_count??item.detected_by??'Unavailable'}</span><span>Checked: {item.checked_at||'Unavailable'}</span>{item.reason&&<span className="text-danger">{item.reason}</span>}</div></div>):<div className="text-xs text-slate-500">No provider results returned. This is not a clean verdict.</div>}</div></Section>
     <Section title="Typosquatting and brand verification">{domain.brand_matches?.length?domain.brand_matches.map((match:any,i:number)=><div key={i} className="mb-2 rounded-xl border border-danger/20 p-3 text-xs"><div className="font-semibold text-danger">Possible {match.brand} similarity · {match.risk}</div><div className="mt-1 grid gap-1 md:grid-cols-2"><span>Official: {match.official_domain}</span><span>Suspected: {match.suspected_domain}</span><span>Similarity: {match.similarity_percent}%</span><span>Edit distance: {match.edit_distance}</span><span className="md:col-span-2">Technique: {match.manipulation}</span></div></div>):<div className="text-xs text-slate-500">No configured similarity candidate. This is not proof of safety.</div>}<div className="mt-3 text-xs text-slate-400">Ownership status: {domain.ownership?.status||'unknown'} · {domain.ownership?.message||'Branding alone does not verify ownership.'}</div></Section>
-    <Section title="Website identity and logo intelligence"><div className="grid gap-2 md:grid-cols-2"><Row label="Page title" value={identity.title}/><Row label="Meta description" value={identity.meta_description}/><Row label="Favicon" value={identity.favicon_url}/><Row label="Logo candidates" value={identity.logo_candidates?.length?identity.logo_candidates.join(', '):'LOGO NOT AVAILABLE'}/><Row label="Logo comparison" value={identity.logo_comparison?.status||'COMPARISON UNAVAILABLE'}/><Row label="Content fingerprint" value={identity.content_sha256}/><Row label="Login indicators" value={identity.login_indicators?'Detected':'Not detected'}/><Row label="Payment indicators" value={identity.payment_indicators?'Detected':'Not detected'}/><Row label="External scripts" value={identity.scripts?.length?identity.scripts.join(', '):'None returned'}/></div><div className="mt-3 space-y-2">{identity.logo_assets?.length?identity.logo_assets.map((asset:any,i:number)=><div key={i} className="rounded-lg border border-line p-2 text-xs"><div className="flex items-center justify-between gap-2"><div className="flex items-center gap-2 overflow-hidden"><img src={asset.url} alt="Logo asset" className="h-6 w-6 object-contain rounded bg-white/10 p-0.5" onError={(e)=>{ (e.target as HTMLElement).style.display='none'; }} /><span className="truncate">{asset.url}</span></div><span className={statusClass(asset.status)}>{asset.status}</span></div><div className="mt-1 text-slate-500">{asset.content_type||'unknown'} · {asset.width||'auto'}×{asset.height||'auto'} · {asset.reason||'fingerprint available'}</div></div>):<div className="text-xs text-slate-500">LOGO NOT AVAILABLE</div>}{Array.isArray(identity.logo_comparisons)&&identity.logo_comparisons.length?identity.logo_comparisons.map((match:any,i:number)=><div key={i} className="rounded-lg border border-cyan/30 p-2 text-xs"><div className="font-semibold">{match.brand} · {match.similarity_percent}% similarity</div><div className="text-slate-400">Reference: {match.official_domain} · {match.method} · {match.confidence} confidence</div><div className="text-slate-500">Similarity is supporting evidence only; ownership requires verification.</div></div>):<div className="text-xs text-slate-500">{identity.logo_comparisons?.reason||'COMPARISON UNAVAILABLE: no approved reference logo exists.'}</div>}</div><div className="mt-3 text-xs text-slate-500">Identity status: {identity.status||'unknown'} · Visual/logo ownership is not inferred without verified evidence.</div></Section>
+    <Section title="Website identity and logo intelligence">
+      <div className="grid gap-2 md:grid-cols-2">
+        <Row label="Page title" value={identity.title}/>
+        <Row label="Meta description" value={identity.meta_description}/>
+        <div className="flex items-center justify-between rounded-lg border border-line p-2 text-xs">
+          <span className="text-slate-400">Favicon</span>
+          <div className="flex items-center gap-2 max-w-[70%]">
+            <img
+              src={identity.favicon_url || (data?.domain ? `https://www.google.com/s2/favicons?domain=${data.domain}&sz=64` : '')}
+              alt="Favicon"
+              className="h-5 w-5 rounded bg-white/10 p-0.5 object-contain border border-line shrink-0"
+              onError={(e) => {
+                const target = e.currentTarget;
+                if (data?.domain && !target.src.includes('google.com/s2/favicons')) {
+                  target.src = `https://www.google.com/s2/favicons?domain=${data.domain}&sz=64`;
+                }
+              }}
+            />
+            <span className="truncate text-slate-200" title={identity.favicon_url}>{identity.favicon_url || 'Unavailable'}</span>
+          </div>
+        </div>
+        <Row label="Logo candidates" value={identity.logo_candidates?.length ? identity.logo_candidates.join(', ') : 'None extracted directly from HTML'}/>
+        <Row label="Logo comparison" value={identity.logo_comparison?.status || 'COMPARISON UNAVAILABLE'}/>
+        <Row label="Content fingerprint" value={identity.content_sha256}/>
+        <Row label="Login indicators" value={identity.login_indicators ? 'Detected' : 'Not detected'}/>
+        <Row label="Payment indicators" value={identity.payment_indicators ? 'Detected' : 'Not detected'}/>
+        <Row label="External scripts" value={identity.scripts?.length ? identity.scripts.join(', ') : 'None returned'}/>
+      </div>
+      <div className="mt-3 space-y-2">
+        {identity.logo_assets?.length ? (
+          identity.logo_assets.map((asset: any, i: number) => (
+            <div key={i} className="rounded-lg border border-line p-2 text-xs">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2 overflow-hidden">
+                  <img
+                    src={asset.url}
+                    alt="Logo asset"
+                    className="h-7 w-7 object-contain rounded bg-white/10 p-0.5 border border-line/40 shrink-0"
+                    onError={(e) => {
+                      const target = e.currentTarget;
+                      if (data?.domain && !target.src.includes('google.com/s2/favicons')) {
+                        target.src = `https://www.google.com/s2/favicons?domain=${data.domain}&sz=128`;
+                      } else {
+                        target.style.display = 'none';
+                      }
+                    }}
+                  />
+                  <span className="truncate font-medium text-slate-200">{asset.url}</span>
+                </div>
+                <span className={statusClass(asset.status)}>{asset.status}</span>
+              </div>
+              <div className="mt-1 text-slate-500">
+                {asset.content_type || 'image/asset'} · {asset.width || 'auto'}×{asset.height || 'auto'} · {asset.reason || 'fingerprint available'}
+              </div>
+            </div>
+          ))
+        ) : (
+          <div className="rounded-lg border border-cyan/30 bg-cyan/5 p-3 text-xs">
+            <div className="flex items-center gap-3">
+              <img
+                src={identity.favicon_url || (data?.domain ? `https://www.google.com/s2/favicons?domain=${data.domain}&sz=128` : '')}
+                alt="Observed brand icon"
+                className="h-10 w-10 rounded-lg bg-black/40 p-1.5 border border-line object-contain shrink-0"
+                onError={(e) => {
+                  const target = e.currentTarget;
+                  if (data?.domain && !target.src.includes('google.com/s2/favicons')) {
+                    target.src = `https://www.google.com/s2/favicons?domain=${data.domain}&sz=128`;
+                  }
+                }}
+              />
+              <div>
+                <div className="font-semibold text-slate-200">Observed website brand icon</div>
+                <div className="text-slate-400">Extracted from website favicon metadata ({identity.favicon_url ? 'direct favicon' : 'Google Favicon service'}).</div>
+                <div className="text-slate-500 text-[10px]">No high-resolution header logo was declared in HTML; brand icon observed from favicon.</div>
+              </div>
+            </div>
+          </div>
+        )}
+        {Array.isArray(identity.logo_comparisons) && identity.logo_comparisons.length ? (
+          identity.logo_comparisons.map((match: any, i: number) => (
+            <div key={i} className="rounded-lg border border-cyan/30 p-2 text-xs">
+              <div className="font-semibold text-slate-200">{match.brand} · {match.similarity_percent}% similarity</div>
+              <div className="text-slate-400">Reference: {match.official_domain} · {match.method} · {match.confidence} confidence</div>
+              <div className="text-slate-500">Similarity is supporting evidence only; ownership requires verification.</div>
+            </div>
+          ))
+        ) : (
+          <div className="rounded-md border border-line/40 bg-black/20 p-2 text-xs text-slate-400">
+            <span className="font-semibold text-slate-300">Reference brand verification: </span>
+            {identity.logo_comparisons?.reason || 'No approved reference logo is configured in registry for comparison.'}
+          </div>
+        )}
+      </div>
+      <div className="mt-3 text-xs text-slate-500">
+        Identity status: {identity.status || 'unknown'} · Visual/logo ownership is not inferred without verified evidence.
+      </div>
+    </Section>
     <CertificateRiskPanel data={data}/><CertificateChainPanel data={data}/><CertificateTransparencyPanel data={data}/><WebsiteIdentityIntelligencePanel data={data}/><AdvancedTrustIntelligencePanel data={data}/><InfrastructureGraphPanel scanId={data?.id} data={infra}/>
+    <EvidenceProvenancePanel scanId={data?.id} scan={data} />
     <Section title="Domain risk explanation"><div className="grid gap-2 md:grid-cols-3"><Row label="Overall score" value={`${data?.risk?.score??'Unknown'}/100`}/><Row label="Classification" value={data?.risk?.level}/><Row label="Confidence" value={data?.risk?.confidence}/></div><p className="mt-3 text-xs text-slate-400">{data?.risk?.summary||'Risk is based on available evidence; unavailable providers do not create a clean result.'}</p>{data?.risk?.contributions?.map((item:any,i:number)=><div key={i} className="mt-2 rounded-md border border-line p-2 text-xs"><span className="text-cyan">+{item.points} · {item.source}</span><div className="text-slate-400">{item.explanation}</div></div>)}{data?.risk?.redirect_influence&&<div className="mt-2 text-xs text-cyan">Redirect influence: +{data.risk.redirect_influence.added} points · {data.risk.redirect_influence.explanation}</div>}{findings.length?<div className="mt-3 space-y-1">{findings.map((item:any,i:number)=><div key={i} className="rounded-md bg-danger/10 p-2 text-xs text-danger">{item.provider}: {item.threat_type||item.state||'finding'}</div>)}</div>:<div className="mt-3 text-xs text-slate-500">No confirmed threat findings returned. This does not prove the domain is safe.</div>}</Section>
     <Section title="Historical domain intelligence"><div className="space-y-2">{history.filter((item:any)=>item.domain===data?.domain).slice(0,5).map((item:any)=><div key={item.id} className="flex justify-between rounded-md border border-line p-2 text-xs"><span>{item.created_at||'Historical scan'}</span><span>{item.risk_score}/100 · {item.risk_level}</span></div>)}{!history.some((item:any)=>item.domain===data?.domain)&&<div className="text-xs text-slate-500">No previous scan for this domain is available.</div>}</div></Section>
   </div>;

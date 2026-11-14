@@ -16,7 +16,9 @@ def _network_key():
     return settings.blockchain_network_name or settings.blockchain_chain_id or "sepolia"
 
 def configuration_status():
-    return {"configured": bool(settings.blockchain_rpc_url and settings.blockchain_contract_address), "network": settings.blockchain_network_name or settings.blockchain_chain_id or None, "contract_address_configured": bool(settings.blockchain_contract_address), "private_key_custody": False}
+    configured = bool(settings.blockchain_rpc_url and settings.blockchain_contract_address)
+    expected_chain = int(settings.blockchain_chain_id) if str(settings.blockchain_chain_id or "").isdigit() else None
+    return {"configured": configured, "network": settings.blockchain_network_name or settings.blockchain_chain_id or None, "contract_address_configured": bool(settings.blockchain_contract_address), "private_key_custody": False, "chain_id_matches": expected_chain == 11155111, "contract_code_present": False, "operational": False, "status": "CONFIGURED_NOT_VERIFIED" if configured else "NOT_CONFIGURED"}
 
 def verify_configuration():
     base = configuration_status()

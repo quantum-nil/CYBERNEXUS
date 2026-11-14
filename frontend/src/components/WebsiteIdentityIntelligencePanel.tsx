@@ -19,8 +19,113 @@ export default function WebsiteIdentityIntelligencePanel({ data }: { data: any }
     <div className="flex flex-wrap items-start justify-between gap-3"><div><div className="text-xs uppercase tracking-[.2em] text-cyan">Dedicated analysis</div><h3 className="mt-1 text-lg font-semibold">Website Identity Intelligence</h3><p className="mt-1 text-xs text-slate-400">Evidence-based favicon and logo analysis. Visual similarity is not proof of ownership or fraud.</p></div><div className="text-right"><State value={identity.identity_assessment || 'UNKNOWN'}/><div className="mt-1 text-[11px] text-slate-500">{text(identity.analyzed_at || data?.created_at)}</div></div></div>
     <div className="mt-4 grid gap-3 md:grid-cols-4"><div className="rounded-xl border border-line p-3"><Cell label="Domain" value={data?.domain}/></div><div className="rounded-xl border border-line p-3"><Cell label="Website title" value={identity.title}/></div><div className="rounded-xl border border-line p-3"><Cell label="Favicon status" value={identity.favicon_status}/></div><div className="rounded-xl border border-line p-3"><Cell label="Logo status" value={identity.logo_status}/></div></div>
     <div className="mt-4 grid gap-4 xl:grid-cols-2">
-      <div className="rounded-xl border border-line p-4"><div className="mb-3 flex items-center justify-between"><h4 className="font-semibold">Favicon extraction and validation</h4><State value={`${faviconAssets.length} candidates`}/></div>{faviconAssets.length ? <div className="space-y-2">{faviconAssets.map((asset: any, index: number) => <details key={`${asset.url}-${index}`} className="rounded-lg border border-line p-3"><summary className="cursor-pointer text-xs font-medium">{asset.url} · <State value={asset.status}/></summary><div className="mt-3 grid gap-3 sm:grid-cols-2"><Cell label="Format" value={asset.detected_format || asset.format}/><Cell label="Dimensions" value={asset.width && asset.height ? `${asset.width} × ${asset.height}` : 'Unavailable'}/><Cell label="ICO entries" value={asset.ico_entries}/><Cell label="Source" value={asset.source}/><Cell label="SHA-256" value={asset.sha256}/><Cell label="Perceptual hash" value={asset.phash}/><Cell label="Difference hash" value={asset.dhash}/><Cell label="Retrieved" value={asset.retrieved_at}/></div>{asset.reason && <div className="mt-2 text-xs text-red-300">Processing: {asset.reason}</div>}</details>)}</div> : <div className="text-xs text-slate-500">FAVICON_NOT_FOUND</div>}</div>
-      <div className="rounded-xl border border-line p-4"><div className="mb-3 flex items-center justify-between"><h4 className="font-semibold">Logo extraction and validation</h4><State value={`${logoAssets.length} candidates`}/></div>{logoAssets.length ? <div className="space-y-2">{logoAssets.map((asset: any, index: number) => <details key={`${asset.url}-${index}`} className="rounded-lg border border-line p-3"><summary className="cursor-pointer text-xs font-medium">{asset.url} · <State value={asset.status}/></summary><div className="mt-3 grid gap-3 sm:grid-cols-2"><Cell label="Format" value={asset.detected_format || asset.format}/><Cell label="Dimensions" value={asset.width && asset.height ? `${asset.width} × ${asset.height}` : 'Unavailable'}/><Cell label="Extraction method" value={asset.source}/><Cell label="SHA-256" value={asset.sha256}/><Cell label="Perceptual hash" value={asset.phash}/><Cell label="Retrieved" value={asset.retrieved_at}/></div>{asset.reason && <div className="mt-2 text-xs text-red-300">Processing: {asset.reason}</div>}</details>)}</div> : <div className="text-xs text-slate-500">LOGO_NOT_FOUND</div>}</div>
+      <div className="rounded-xl border border-line p-4">
+        <div className="mb-3 flex items-center justify-between">
+          <h4 className="font-semibold">Favicon extraction and validation</h4>
+          <State value={`${faviconAssets.length} candidates`}/>
+        </div>
+        {faviconAssets.length ? (
+          <div className="space-y-2">
+            {faviconAssets.map((asset: any, index: number) => (
+              <details key={`${asset.url}-${index}`} className="rounded-lg border border-line p-3">
+                <summary className="cursor-pointer text-xs font-medium flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 overflow-hidden">
+                    <img
+                      src={asset.url}
+                      alt="Favicon"
+                      className="h-5 w-5 rounded bg-white/10 p-0.5 object-contain border border-line/50 shrink-0"
+                      onError={(e) => {
+                        const target = e.currentTarget;
+                        if (data?.domain && !target.src.includes('google.com/s2/favicons')) {
+                          target.src = `https://www.google.com/s2/favicons?domain=${data.domain}&sz=64`;
+                        } else {
+                          target.style.display = 'none';
+                        }
+                      }}
+                    />
+                    <span className="truncate">{asset.url}</span>
+                  </div>
+                  <State value={asset.status}/>
+                </summary>
+                <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                  <Cell label="Format" value={asset.detected_format || asset.format}/>
+                  <Cell label="Dimensions" value={asset.width && asset.height ? `${asset.width} × ${asset.height}` : 'Unavailable'}/>
+                  <Cell label="ICO entries" value={asset.ico_entries}/>
+                  <Cell label="Source" value={asset.source}/>
+                  <Cell label="SHA-256" value={asset.sha256}/>
+                  <Cell label="Perceptual hash" value={asset.phash}/>
+                  <Cell label="Difference hash" value={asset.dhash}/>
+                  <Cell label="Retrieved" value={asset.retrieved_at}/>
+                </div>
+                {asset.reason && <div className="mt-2 text-xs text-red-300">Processing: {asset.reason}</div>}
+              </details>
+            ))}
+          </div>
+        ) : (
+          <div className="flex items-center gap-3 rounded-lg border border-line p-3 text-xs text-slate-400">
+            <img
+              src={`https://www.google.com/s2/favicons?domain=${data?.domain}&sz=64`}
+              alt="Favicon fallback"
+              className="h-6 w-6 rounded bg-white/10 p-0.5 object-contain border border-line shrink-0"
+            />
+            <span>Favicon observed via Google Favicon service for {data?.domain}</span>
+          </div>
+        )}
+      </div>
+      <div className="rounded-xl border border-line p-4">
+        <div className="mb-3 flex items-center justify-between">
+          <h4 className="font-semibold">Logo extraction and validation</h4>
+          <State value={`${logoAssets.length} candidates`}/>
+        </div>
+        {logoAssets.length ? (
+          <div className="space-y-2">
+            {logoAssets.map((asset: any, index: number) => (
+              <details key={`${asset.url}-${index}`} className="rounded-lg border border-line p-3">
+                <summary className="cursor-pointer text-xs font-medium flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 overflow-hidden">
+                    <img
+                      src={asset.url}
+                      alt="Logo"
+                      className="h-6 w-6 rounded bg-white/10 p-0.5 object-contain border border-line/50 shrink-0"
+                      onError={(e) => {
+                        const target = e.currentTarget;
+                        if (data?.domain && !target.src.includes('google.com/s2/favicons')) {
+                          target.src = `https://www.google.com/s2/favicons?domain=${data.domain}&sz=128`;
+                        } else {
+                          target.style.display = 'none';
+                        }
+                      }}
+                    />
+                    <span className="truncate">{asset.url}</span>
+                  </div>
+                  <State value={asset.status}/>
+                </summary>
+                <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                  <Cell label="Format" value={asset.detected_format || asset.format}/>
+                  <Cell label="Dimensions" value={asset.width && asset.height ? `${asset.width} × ${asset.height}` : 'Unavailable'}/>
+                  <Cell label="Extraction method" value={asset.source}/>
+                  <Cell label="SHA-256" value={asset.sha256}/>
+                  <Cell label="Perceptual hash" value={asset.phash}/>
+                  <Cell label="Retrieved" value={asset.retrieved_at}/>
+                </div>
+                {asset.reason && <div className="mt-2 text-xs text-red-300">Processing: {asset.reason}</div>}
+              </details>
+            ))}
+          </div>
+        ) : (
+          <div className="flex items-center gap-3 rounded-lg border border-line p-3 text-xs text-slate-400">
+            <img
+              src={`https://www.google.com/s2/favicons?domain=${data?.domain}&sz=128`}
+              alt="Brand icon"
+              className="h-8 w-8 rounded bg-black/40 p-1 object-contain border border-line shrink-0"
+            />
+            <div>
+              <div className="font-semibold text-slate-300">Observed Brand Icon</div>
+              <div className="text-[11px] text-slate-500">Extracted from {data?.domain} icon metadata. Official brand logo comparison requires registered reference.</div>
+            </div>
+          </div>
+        )}
+      </div>
     </div>
     <div className="mt-4 grid gap-4 xl:grid-cols-2"><div className="rounded-xl border border-line p-4"><h4 className="font-semibold">Approved favicon comparisons</h4>{faviconMatches.length ? <div className="mt-3 space-y-2">{faviconMatches.map((match: any, index: number) => <div key={index} className="rounded-lg border border-emerald-300/20 bg-emerald-300/5 p-3"><div className="flex justify-between gap-3 text-sm"><span>{text(match.brand)}</span><State value={match.exact_match ? 'EXACT_MATCH' : 'SIMILAR_MATCH'}/></div><div className="mt-2 grid gap-2 sm:grid-cols-2"><Cell label="Similarity" value={`${text(match.similarity_percent)}%`}/><Cell label="Confidence" value={match.confidence}/><Cell label="Method" value={match.method}/><Cell label="Reference asset" value={match.reference_asset_id}/></div><div className="mt-2 text-xs text-slate-500">{match.limitations || 'Comparison is supporting identity evidence only.'}</div></div>)}</div> : <div className="mt-3 text-xs text-slate-500">{identity.favicon_comparisons?.reason || 'NO_APPROVED_FAVICON_REFERENCE'}</div>}</div><div className="rounded-xl border border-line p-4"><h4 className="font-semibold">Approved logo comparisons</h4>{logoMatches.length ? <div className="mt-3 space-y-2">{logoMatches.map((match: any, index: number) => <div key={index} className="rounded-lg border border-amber-300/20 bg-amber-300/5 p-3"><div className="flex justify-between gap-3 text-sm"><span>{text(match.brand)}</span><State value={match.exact_match ? 'EXACT_MATCH' : 'SIMILAR_MATCH'}/></div><div className="mt-2 grid gap-2 sm:grid-cols-2"><Cell label="Similarity" value={`${text(match.similarity_percent)}%`}/><Cell label="Confidence" value={match.confidence}/><Cell label="Method" value={match.method}/><Cell label="Reference asset" value={match.reference_logo_id}/></div></div>)}</div> : <div className="mt-3 text-xs text-slate-500">{identity.logo_comparisons?.reason || 'No approved logo reference matched.'}</div>}</div></div>
     <div className="mt-4 rounded-xl border border-line p-4"><h4 className="font-semibold">Identity findings and reputation contribution</h4>{findings.length ? <div className="mt-3 space-y-2">{findings.map((finding: any, index: number) => <div key={index} className="rounded-lg border border-line p-3 text-xs"><div className="flex flex-wrap justify-between gap-2"><span className="font-semibold text-cyan">{text(finding.finding_type)}</span><span>{text(finding.brand)} · {text(finding.confidence)} confidence · +{text(finding.risk_contribution)} risk points</span></div><div className="mt-1 text-slate-400">{text(finding.explanation)}</div><div className="mt-1 text-slate-500">Source: {text(finding.source)} · Checked: {text(finding.checked_at)}</div></div>)}</div> : <div className="mt-3 text-xs text-slate-500">No approved favicon or logo comparison finding was produced. This is not proof of safety.</div>}</div>

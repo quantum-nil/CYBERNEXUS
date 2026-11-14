@@ -27,3 +27,7 @@ frontend/playwright-*.png
 *.db
 *.db-*
 *.bak
+
+# Local deployment/API references are maintained per workspace and not committed.
+API_LOCAL.md
+API_DEPLOYMENT.md

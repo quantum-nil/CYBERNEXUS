@@ -5,6 +5,7 @@ import {
   BarChart3,
   ChevronDown,
   FileText,
+  Fingerprint,
   Globe2,
   History,
   MailCheck,
@@ -25,14 +26,20 @@ import SecurityAuthorizationPanel from "./components/SecurityAuthorizationPanel"
 import WalletIntegrationPanel from "./components/WalletIntegrationPanel";
 import EvidenceManagementPanel from "./components/EvidenceManagementPanel";
 import EvidenceTracePanel from "./components/EvidenceTracePanel";
+import EvidenceProvenancePanel from "./components/EvidenceProvenancePanel";
 import EmailSecurityPanel from "./components/EmailSecurityPanel";
 import MessageHistoryPanel from "./components/MessageHistoryPanel";
 import MessageReportsPanel from "./components/MessageReportsPanel";
 import MLLifecycleStatusPanel from "./components/MLLifecycleStatusPanel";
+import MLModelManagementPanel from "./components/MLModelManagementPanel";
+import ContactIntelligencePanel from "./components/ContactIntelligencePanel";
+import AdminReviewPanel from "./components/AdminReviewPanel";
 
 const nav = [
   ["Overview", BarChart3],
   ["Threat scanner", Radar],
+  ["Evidence provenance", Fingerprint],
+  ["Ledger & Blockchain", ShieldCheck],
   ["Website security", ShieldCheck],
   ["Message analysis", MessageSquare],
   ["Email analysis", MailCheck],
@@ -43,7 +50,28 @@ const nav = [
   ["Community intel", Users],
   ["Threat correlation", Network],
 ] as const;
-const serviceNav = nav.slice(1, 9);
+const serviceNav = [
+  ["Threat scanner", Radar] as const,
+  ["Scan history", History] as const,
+  ["Evidence provenance", Fingerprint] as const,
+  ["Ledger & Blockchain", ShieldCheck] as const,
+  ["Zero-trust controls", ShieldCheck] as const,
+  ["Privacy center", ShieldCheck] as const,
+  ["Identity & auth", Users] as const,
+  ["Administrator review", Users] as const,
+  ["Website security", ShieldCheck] as const,
+  ["Message analysis", MessageSquare] as const,
+  ["Email analysis", MailCheck] as const,
+  ["Message analysis history", History] as const,
+  ["Message analysis reports", FileText] as const,
+  ["ML lifecycle status", Activity] as const,
+];
+const serviceGroups = [
+  { label: "Real-time threat detection", items: ["Threat scanner", "Scan history"] },
+  { label: "Cryptographic provenance & ledger", items: ["Evidence provenance", "Ledger & Blockchain"] },
+  { label: "Zero-trust & governance", items: ["Zero-trust controls", "Privacy center", "Identity & auth", "Administrator review"] },
+  { label: "Analysis & intelligence services", items: ["Website security", "Message analysis", "Email analysis", "Message analysis history", "Message analysis reports", "Contact intelligence", "ML lifecycle status"] },
+] as const;
 export default function App() {
   const [tab, setTab] = useState("Overview");
   const [theme, setTheme] = useState<"dark" | "light">(() =>
@@ -55,6 +83,7 @@ export default function App() {
   const [history, setHistory] = useState<any[]>([]);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [scanStatus, setScanStatus] = useState("");
   useEffect(() => {
     api("/scans")
       .then(setHistory)
@@ -75,11 +104,30 @@ export default function App() {
     e.preventDefault();
     setBusy(true);
     setError("");
+    setScanStatus("Submitting scan…");
     try {
-      const x = await api("/scans", {
-        method: "POST",
-        body: JSON.stringify({ url }),
-      });
+      let x: any;
+      try {
+        const job = await api("/scan-jobs", {
+          method: "POST",
+          body: JSON.stringify({ url }),
+        });
+        if (!job || !job.task_id) throw new Error("Async scan jobs not available");
+        let status = job;
+        while (!["COMPLETED", "FAILED"].includes(status.status)) {
+          setScanStatus(status.status === "RUNNING" ? "Analyzing threat signals…" : "Queued…");
+          await new Promise((resolve) => setTimeout(resolve, 900));
+          status = await api(`/scan-jobs/${job.task_id}`);
+        }
+        if (status.status === "FAILED") throw new Error(status.error || "Scan failed");
+        x = { id: status.scan_id, ...status.result };
+      } catch (jobErr) {
+        // Fallback to synchronous /scans if /scan-jobs is unavailable or in test mocks
+        x = await api("/scans", {
+          method: "POST",
+          body: JSON.stringify({ url }),
+        });
+      }
       setResult(x);
       setHistory((h) => [x, ...h]);
       setTab("Threat scanner");
@@ -87,6 +135,7 @@ export default function App() {
       setError(x.message);
     } finally {
       setBusy(false);
+      setScanStatus("");
     }
   }
   function toggleTheme() {
@@ -112,7 +161,7 @@ export default function App() {
           </div>
           <div className="cinematic-nav-row">
             <button type="button" onClick={() => setTab("Overview")} className={`top-nav-link ${tab === "Overview" ? "active" : ""}`}>Overview</button>
-            <div className={`services-menu ${servicesOpen ? "open" : ""} ${serviceNav.some(([name]) => name === tab) ? "active" : ""}`} onClick={(event) => event.stopPropagation()}><button type="button" className="services-select" onClick={() => setServicesOpen((open) => !open)} aria-expanded={servicesOpen} aria-haspopup="menu"><span>Services</span><ChevronDown size={14} /></button>{servicesOpen && <div className="services-dropdown" role="menu">{serviceNav.map(([name]) => <button type="button" role="menuitem" key={name} className={tab === name ? "selected" : ""} onClick={() => { setTab(name); setServicesOpen(false); }}>{name}</button>)}</div>}</div>
+            <div className={`services-menu ${servicesOpen ? "open" : ""} ${serviceNav.some(([name]) => name === tab) ? "active" : ""}`} onClick={(event) => event.stopPropagation()}><button type="button" className="services-select" onClick={() => setServicesOpen((open) => !open)} aria-expanded={servicesOpen} aria-haspopup="menu"><span>Services</span><ChevronDown size={14} /></button>{servicesOpen && <div className="services-dropdown" role="menu">{serviceGroups.map((group) => <div className="services-group" key={group.label}>{group.label === "Real-time threat detection" ? <button type="button" className="services-group-label services-group-link" role="menuitem" onClick={() => { setTab("Threat scanner"); setServicesOpen(false); }}>{group.label}</button> : <div className="services-group-label">{group.label}</div>}<div className="services-group-items">{group.items.map((name) => <button type="button" role="menuitem" key={name} className={`services-item-btn ${tab === name ? "selected" : ""}`} onClick={() => { setTab(name); setServicesOpen(false); }}>{name}</button>)}</div></div>)}</div>}</div>
             <button type="button" onClick={() => setTab("Community intel")} className={`top-nav-link ${tab === "Community intel" ? "active" : ""}`}>Community intel</button>
             <button type="button" onClick={() => setTab("Threat correlation")} className={`top-nav-link ${tab === "Threat correlation" ? "active" : ""}`}>Threat correlation</button>
           </div>
@@ -127,7 +176,7 @@ export default function App() {
             <div className="mb-2 text-xs uppercase tracking-[.2em] text-cyan">Security operations</div>
             <h1 className="text-3xl font-semibold">{tab}</h1>
           </header>}
-          {tab === "Overview" && <OverviewLanding history={history} result={result} url={url} setUrl={setUrl} scan={scan} busy={busy} error={error} setTab={setTab} />}
+          {tab === "Overview" && <OverviewLanding history={history} result={result} url={url} setUrl={setUrl} scan={scan} busy={busy} error={error} scanStatus={scanStatus} setTab={setTab} />}
           {tab === "Threat scanner" && (
             <>
               <div className="glass mb-7 rounded-3xl p-6">
@@ -154,7 +203,18 @@ export default function App() {
                     {busy ? "Analyzing..." : "Run trust scan"}
                   </button>
                 </form>
-                {error && <p className="mt-3 text-sm text-danger">{error}</p>}
+                {error && (
+                  <div className="mt-3 flex items-center justify-between rounded-xl border border-danger/30 bg-danger/10 p-3 text-xs text-danger">
+                    <span>{error}</span>
+                    <button
+                      type="button"
+                      onClick={scan}
+                      className="ml-3 shrink-0 rounded border border-danger/40 px-3 py-1 font-semibold uppercase tracking-wider text-danger hover:bg-danger/20"
+                    >
+                      Retry
+                    </button>
+                  </div>
+                )}
               </div>
               <div className="mb-7 grid gap-4 sm:grid-cols-3">
                 <Stat label="Scans completed" value={history.length} />
@@ -172,12 +232,73 @@ export default function App() {
               {result && <ScanResult data={result} />}
             </>
           )}
+          {tab === "Evidence provenance" && (
+            <div className="space-y-6">
+              <div className="glass rounded-3xl p-6">
+                <div className="mb-2 text-xs uppercase tracking-[.2em] text-cyan">Cryptographic Provenance Engine</div>
+                <h2 className="text-2xl font-semibold">Evidence Provenance & Verification</h2>
+                <p className="mt-2 text-sm text-slate-400">
+                  Every security finding is cryptographically bound to its originating source provider, observation timestamp, confidence score, and deterministic SHA-256 evidence content hash.
+                </p>
+                {history.length > 0 && (
+                  <div className="mt-5 flex flex-wrap items-center gap-2">
+                    <span className="text-xs text-slate-400 mr-2 font-mono uppercase">Select scan target:</span>
+                    {history.slice(0, 8).map((h: any) => (
+                      <button
+                        key={h.id}
+                        type="button"
+                        onClick={() => setResult(h)}
+                        className={`services-item-btn ${(result?.id === h.id || (!result && history[0]?.id === h.id)) ? "selected" : ""}`}
+                      >
+                        {h.domain || h.url || `Scan #${h.id}`}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <EvidenceProvenancePanel scan={result || history[0]} scanId={result?.id || history[0]?.id} />
+            </div>
+          )}
+          {tab === "Ledger & Blockchain" && (
+            <div className="space-y-6">
+              <div className="glass rounded-3xl p-6">
+                <div className="mb-2 text-xs uppercase tracking-[.2em] text-cyan">Tamper-evident verification</div>
+                <h2 className="text-2xl font-semibold">Ledger & Blockchain Verification</h2>
+                <p className="mt-2 text-sm text-slate-400">
+                  Audit report revisions, verify canonical SHA-256 commitments against the local append-only ledger, and inspect on-chain Sepolia blockchain anchoring without exposing private keys.
+                </p>
+              </div>
+              <EvidenceTracePanel scanId={result?.id || history[0]?.id} />
+              <WalletIntegrationPanel />
+            </div>
+          )}
+          {tab === "Administrator review" && (
+            <div className="space-y-6">
+              <AdminReviewPanel />
+            </div>
+          )}
           {tab === "Website security" && <Module5Panel scan={result} />}
-          {tab === "Message analysis" && <Message />}
+          {tab === "Zero-trust controls" && <SecurityFeaturePanel feature="zero-trust" />}
+          {tab === "Privacy center" && <SecurityFeaturePanel feature="privacy" />}
+          {tab === "Identity & auth" && <SecurityFeaturePanel feature="identity" />}
+          {tab === "Message analysis" && (
+            <Message
+              onScanUrl={(targetUrl) => {
+                setUrl(targetUrl);
+                setTab("Threat scanner");
+              }}
+            />
+          )}
           {tab === "Email analysis" && <EmailSecurityPanel />}
           {tab === "Message analysis history" && <MessageHistoryPanel />}
           {tab === "Message analysis reports" && <MessageReportsPanel />}
-          {tab === "ML lifecycle status" && <MLLifecycleStatusPanel />}
+          {tab === "Contact intelligence" && <ContactIntelligencePanel />}
+          {tab === "ML lifecycle status" && (
+            <div className="space-y-6">
+              <MLLifecycleStatusPanel />
+              <MLModelManagementPanel />
+            </div>
+          )}
           {tab === "Scan history" && <HistoryPanel items={history} />}{" "}
           {tab === "Community intel" && <Community />}
           {tab === "Threat correlation" && <Module4Panel scan={result || history[0]} />}
@@ -187,7 +308,7 @@ export default function App() {
   );
 }
 
-function OverviewLanding({ history, result, url, setUrl, scan, busy, error, setTab }: any) {
+function OverviewLanding({ history, result, url, setUrl, scan, busy, error, scanStatus, setTab }: any) {
   const latest = result || history[0];
   const score = Number(latest?.risk?.score ?? latest?.risk_score ?? 0);
   const highRisk = history.filter((x: any) => ["High", "Critical"].includes(x.risk_level || x.risk?.level)).length;
@@ -199,7 +320,28 @@ function OverviewLanding({ history, result, url, setUrl, scan, busy, error, setT
   return <div className="overview-landing">
     <section className="overview-hero">
       <div><div className="overview-eyebrow">DIGITAL TRUST INTELLIGENCE / LIVE OVERVIEW</div><h2>Security built into<br /><span>every system layer</span></h2><p>See risk signals, certificate trust, threat relationships, and investigation activity in one operational view.</p></div>
-      <form onSubmit={scan} className="overview-scan"><label>Start a live trust scan</label><div><Globe2 size={17} /><input required value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://example.com" /><button aria-label="Run trust scan" disabled={busy}>{busy ? "Scanning" : "Scan"}<ArrowUpRight size={16} /></button></div>{error && <small>{error}</small>}</form>
+      <form onSubmit={scan} className="overview-scan">
+        <label>Start a live trust scan</label>
+        <div>
+          <Globe2 size={17} />
+          <input required value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://example.com" />
+          <button aria-label="Run trust scan" disabled={busy}>{busy ? "Scanning" : "Scan"}<ArrowUpRight size={16} /></button>
+        </div>
+        {(scanStatus || error) && (
+          <div className="mt-2 flex items-center justify-between gap-2">
+            <small className={error ? "text-danger" : "text-slate-400"}>{error || scanStatus}</small>
+            {error && (
+              <button
+                type="button"
+                onClick={scan}
+                className="shrink-0 rounded border border-danger/40 px-2.5 py-1 text-[10px] font-semibold text-danger hover:bg-danger/20"
+              >
+                Retry
+              </button>
+            )}
+          </div>
+        )}
+      </form>
     </section>
     <section className="overview-metrics">
       <button type="button" className="overview-card score-card overview-card-button" onClick={go("Threat scanner")}><div className="overview-card-title">Real-time security score <ArrowUpRight size={14} /></div><div className="score-gauge" style={{ "--score": `${score * 3.6}deg` } as CSSProperties}><div><strong>{score}</strong><span>/100</span></div></div><div className="score-state">{latest ? (latest.risk?.level || latest.risk_level || "Analyzed") : "Awaiting scan"}</div><small>Open threat scanner</small></button>
@@ -244,6 +386,7 @@ function Module5Panel({ scan }: { scan?: any }) {
       </div>
       <SecurityAuthorizationPanel />
       <SecurityFindingsPanel scan={scan} />
+      <EvidenceProvenancePanel scan={scan} />
     </div>
   );
 }
@@ -254,6 +397,22 @@ function Stat({ label, value }: any) {
       <div className="mt-1 text-sm text-slate-400">{label}</div>
     </div>
   );
+}
+function SecurityFeaturePanel({ feature }: { feature: "zero-trust" | "privacy" | "identity" }) {
+  const [data, setData] = useState<any>();
+  const [error, setError] = useState("");
+  const titles = { "zero-trust": "Zero-trust controls", privacy: "Privacy center", identity: "Identity & auth" };
+  const descriptions = { "zero-trust": "Every active operation is checked against an approved scope, requester, category, and expiration window.", privacy: "Sensitive inputs are minimized and redacted in memory without persistence.", identity: "OIDC, HttpOnly sessions, roles, and capability checks are resolved by the backend." };
+  useEffect(() => {
+    const paths = feature === "zero-trust" ? ["/auth/permissions", "/security-authorizations"] : feature === "identity" ? ["/auth/config", "/auth/me", "/auth/permissions"] : [];
+    if (!paths.length) return;
+    Promise.all(paths.map((path) => api(path))).then((items) => setData(items)).catch((err: any) => setError(err.message || "Unable to load security status"));
+  }, [feature]);
+  async function demonstratePrivacy() {
+    try { setError(""); setData(await api("/privacy/redact", { method: "POST", body: JSON.stringify({ email: "demo@example.com", message: "sample private data" }) })); }
+    catch (err: any) { setError(err.message || "Privacy endpoint unavailable"); }
+  }
+  return <div className="space-y-6"><div className="glass rounded-3xl p-6"><div className="mb-2 text-xs uppercase tracking-[.2em] text-cyan">Security capability</div><h2 className="text-2xl font-semibold">{titles[feature]}</h2><p className="mt-3 max-w-3xl text-sm text-slate-400">{descriptions[feature]}</p>{feature === "privacy" && <button type="button" onClick={demonstratePrivacy} className="mt-5 rounded-xl bg-cyan px-5 py-3 text-sm font-bold text-ink">Run privacy redaction demo</button>}{error && <p className="mt-4 text-sm text-danger">{error}</p>}{data && <pre className="mt-5 max-h-96 overflow-auto rounded-xl border border-line bg-ink/60 p-4 text-xs text-slate-300">{JSON.stringify(data, null, 2)}</pre>}</div>{feature === "zero-trust" && <SecurityAuthorizationPanel />}</div>;
 }
 function InfrastructurePanel({ data }: any) {
   const rows = data?.providers || [];
@@ -849,18 +1008,29 @@ function Card({ title, value, children }: any) {
     </div>
   );
 }
-function Message() {
+function Message({ onScanUrl }: { onScanUrl?: (url: string) => void }) {
   const [text, setText] = useState("");
   const [result, setResult] = useState<any>();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
   async function submit(e: any) {
     e.preventDefault();
-    setResult(
-      await api("/message-analysis", {
+    setBusy(true);
+    setError("");
+    try {
+      const res = await api("/message-analysis", {
         method: "POST",
         body: JSON.stringify({ text }),
-      }),
-    );
+      });
+      setResult(res);
+    } catch (err: any) {
+      setError(err.message || "Message analysis failed");
+    } finally {
+      setBusy(false);
+    }
   }
+
   return (
     <div className="glass max-w-3xl rounded-3xl p-6">
       <MessageSquare className="mb-3 text-cyan" />
@@ -875,71 +1045,153 @@ function Message() {
           value={text}
           onChange={(e) => setText(e.target.value)}
           rows={8}
-          className="my-4 w-full rounded-xl border border-line bg-ink/60 p-4 text-sm"
+          className="my-4 w-full rounded-xl border border-line bg-ink/60 p-4 text-sm outline-none focus:border-cyan"
           placeholder="Paste a suspicious message..."
         />
-        <button className="rounded-xl bg-cyan px-5 py-3 text-sm font-bold text-ink">
-          Analyze message
+        <button
+          disabled={busy}
+          className="rounded-xl bg-cyan px-5 py-3 text-sm font-bold text-ink disabled:opacity-50"
+        >
+          {busy ? "Analyzing message..." : "Analyze message"}
         </button>
       </form>
+      {error && <p className="mt-4 text-sm text-danger">{error}</p>}
       {result && (
         <div className="mt-5 border-t border-line pt-5">
-          <div className="text-lg capitalize">
+          <div className="text-lg capitalize font-semibold">
             {result.classification} · {result.score}/100
           </div>
-          {result.evidence.map((x: any, i: number) => (
+          {result.evidence?.map((x: any, i: number) => (
             <div key={i} className="mt-2 text-sm text-danger">
               {x.severity}: {x.issue}
             </div>
           ))}
-          <div className="mt-4 text-xs text-slate-400">
-            URLs: {result.indicators.urls.length} · emails:{" "}
-            {result.indicators.emails.length} · phones:{" "}
-            {result.indicators.phones.length}
-          </div>
+
+          {/* Extracted URLs */}
+          {result.indicators?.urls?.length > 0 && (
+            <div className="mt-4 rounded-xl border border-line bg-black/20 p-4">
+              <div className="mb-2 text-xs font-semibold uppercase tracking-wider text-cyan">
+                Extracted URLs ({result.indicators.urls.length})
+              </div>
+              <div className="space-y-2">
+                {result.indicators.urls.map((u: string, idx: number) => (
+                  <div
+                    key={idx}
+                    className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-line/60 bg-ink/40 p-2.5 text-xs"
+                  >
+                    <span className="font-mono text-slate-200 break-all">{u}</span>
+                    {onScanUrl && (
+                      <button
+                        type="button"
+                        onClick={() => onScanUrl(u)}
+                        className="rounded bg-cyan px-2.5 py-1 text-xs font-semibold text-ink hover:opacity-90"
+                      >
+                        Scan in Threat Scanner
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Suspected Domain Spoofing & Brand Impersonation */}
+          {result.indicator_intelligence?.domain_spoofing?.length > 0 && (
+            <div className="mt-4 rounded-xl border border-danger/30 bg-danger/5 p-4">
+              <div className="mb-2 text-xs font-semibold uppercase tracking-wider text-danger">
+                Suspected Brand Impersonation / Spoofing
+              </div>
+              <div className="space-y-2">
+                {result.indicator_intelligence.domain_spoofing.map((f: any, idx: number) => (
+                  <div key={idx} className="rounded-lg border border-danger/20 p-2.5 text-xs">
+                    <div className="font-semibold text-danger">
+                      Suspected {f.brand} similarity ({f.similarity}% match)
+                    </div>
+                    <div className="mt-1 text-slate-300">
+                      Observed: <span className="font-mono text-cyan">{f.observed_domain}</span> · Official: <span className="font-mono text-slate-400">{f.official_domain}</span>
+                    </div>
+                    <div className="mt-1 text-slate-500">
+                      Technique: {f.technique} · Confidence: {f.confidence}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Extracted Emails & Phones */}
+          {(result.indicators?.emails?.length > 0 || result.indicators?.phones?.length > 0) && (
+            <div className="mt-4 grid gap-3 sm:grid-cols-2">
+              {result.indicators?.emails?.length > 0 && (
+                <div className="rounded-xl border border-line p-3 text-xs">
+                  <div className="mb-2 font-semibold text-slate-400 uppercase tracking-wider text-[10px]">
+                    Extracted Emails ({result.indicators.emails.length})
+                  </div>
+                  {result.indicators.emails.map((em: string, i: number) => (
+                    <div key={i} className="font-mono text-slate-200">{em}</div>
+                  ))}
+                </div>
+              )}
+              {result.indicators?.phones?.length > 0 && (
+                <div className="rounded-xl border border-line p-3 text-xs">
+                  <div className="mb-2 font-semibold text-slate-400 uppercase tracking-wider text-[10px]">
+                    Extracted Phones ({result.indicators.phones.length})
+                  </div>
+                  {result.indicators.phones.map((ph: string, i: number) => (
+                    <div key={i} className="font-mono text-slate-200">{ph}</div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Recommendations */}
+          {result.recommendations?.length > 0 && (
+            <div className="mt-4 rounded-xl border border-line p-4">
+              <div className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-400">
+                Security Recommendations
+              </div>
+              <ul className="list-inside list-disc space-y-1 text-xs text-slate-300">
+                {result.recommendations.map((rec: string, idx: number) => (
+                  <li key={idx}>{rec}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {/* ML Model Score */}
           <div className="mt-4 rounded-xl border border-line p-3 text-sm">
             Dataset model:{" "}
-            {result.ml.available
+            {result.ml?.available
               ? `${Math.round(result.ml.malicious_probability * 100)}% malicious probability`
-              : "not trained"}
+              : "Deterministic rule-based"}
           </div>
-          <div className="mt-3 rounded-xl border border-cyan/20 bg-cyan/5 p-3 text-sm text-cyan">
+
+          {/* AI Explanation Card */}
+          <div className="mt-3 rounded-xl border border-cyan/20 bg-cyan/5 p-4 text-sm text-cyan">
             <div className="flex items-center justify-between">
-              <span>LLM Phase 1 explanation</span>
-              <span className="rounded-full bg-slate-800 px-2 py-1 text-xs">
-                {result.llm.available
+              <span className="font-semibold">AI Threat Explanation</span>
+              <span className="rounded-full bg-slate-800 px-2.5 py-1 text-xs text-slate-200">
+                {result.llm?.available
                   ? "CONNECTED"
-                  : result.llm.fallback_type === "template"
-                    ? "TEMPLATE FALLBACK"
-                    : result.llm.status || "UNAVAILABLE"}
+                  : result.llm?.fallback_type === "template"
+                    ? "DETERMINISTIC RULES ENGINE"
+                    : result.llm?.status || "UNAVAILABLE"}
               </span>
             </div>
-            {result.llm.provider && (
+            {result.llm?.provider && (
               <div className="mt-2 text-xs text-slate-400">
                 Provider: {result.llm.provider}
                 {result.llm.model && ` · Model: ${result.llm.model}`}
               </div>
             )}
-            {result.llm.fallback_used && (
+            {result.llm?.fallback_used && (
               <div className="mt-1 text-xs text-amber-300">
-                Fallback used: {result.llm.fallback_type || "provider fallback"}
+                Active mode: {result.llm.fallback_type === "template" ? "Deterministic explainability engine (LLM_API_KEY optional)" : result.llm.fallback_type}
               </div>
             )}
-            {result.llm.reason && (
-              <div className="mt-1 text-xs text-amber-300">
-                {result.llm.reason}
-              </div>
-            )}
-            {result.llm.failures?.length && (
-              <div className="mt-1 text-xs text-slate-500">
-                Provider attempts:{" "}
-                {result.llm.failures
-                  .map((x: any) => `${x.provider || "provider"}=${x.status}`)
-                  .join(" · ")}
-              </div>
-            )}
-            {result.llm.explanation && (
-              <p className="mt-3 whitespace-pre-wrap text-slate-300">
+            {result.llm?.explanation && (
+              <p className="mt-3 whitespace-pre-wrap text-slate-300 text-xs leading-relaxed">
                 {result.llm.explanation}
               </p>
             )}

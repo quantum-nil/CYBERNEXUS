@@ -1,4 +1,6 @@
+import hashlib
 import re
+from datetime import datetime, timezone
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import SQLAlchemyError
 from pathlib import Path
@@ -36,11 +38,16 @@ def run_migrations():
     with engine.begin() as connection:
         dialect = connection.dialect.name
         connection.execute(text("CREATE TABLE IF NOT EXISTS schema_migrations (version VARCHAR(255) PRIMARY KEY, applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)"))
+        connection.execute(text("CREATE TABLE IF NOT EXISTS schema_migration_history (version VARCHAR(255) PRIMARY KEY, checksum VARCHAR(64), started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, completed_at TIMESTAMP, status VARCHAR(32) DEFAULT 'COMPLETED', error TEXT)"))
         applied_rows = connection.execute(text("SELECT version FROM schema_migrations")).fetchall()
         applied = {row[0] for row in applied_rows}
         for path in sorted(migration_dir.glob("*.sql")):
             if path.name in applied:
                 continue
+            raw_bytes = path.read_bytes()
+            checksum = hashlib.sha256(raw_bytes).hexdigest()
+            start_time = datetime.now(timezone.utc)
+            migration_error = None
             for statement in path.read_text(encoding="utf-8").split(";"):
                 stmt = statement.strip()
                 if not stmt:
@@ -65,13 +72,27 @@ def run_migrations():
                         and "unique constraint" not in message
                         and "duplicate key" not in message
                     ):
+                        migration_error = str(exc)
                         raise
+            end_time = datetime.now(timezone.utc)
             insert_stmt = (
                 "INSERT INTO schema_migrations (version) VALUES (:v) ON CONFLICT DO NOTHING"
                 if dialect == "postgresql"
                 else "INSERT OR IGNORE INTO schema_migrations (version) VALUES (:v)"
             )
             connection.execute(text(insert_stmt), {"v": path.name})
+            hist_stmt = (
+                "INSERT INTO schema_migration_history (version, checksum, started_at, completed_at, status, error) "
+                "VALUES (:v, :c, :s, :e, :st, :err) ON CONFLICT (version) DO UPDATE SET "
+                "completed_at = :e, status = :st, error = :err"
+                if dialect == "postgresql"
+                else "INSERT OR REPLACE INTO schema_migration_history (version, checksum, started_at, completed_at, status, error) "
+                "VALUES (:v, :c, :s, :e, :st, :err)"
+            )
+            connection.execute(text(hist_stmt), {
+                "v": path.name, "c": checksum, "s": start_time, "e": end_time,
+                "st": "FAILED" if migration_error else "COMPLETED", "err": migration_error
+            })
         _install_ledger_guards(connection)
 
 def _install_ledger_guards(connection):

@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from sqlalchemy import Column, DateTime, Integer, String, Text, Float, ForeignKey, UniqueConstraint, LargeBinary, event
+from sqlalchemy import Boolean, Column, DateTime, Integer, String, Text, Float, ForeignKey, UniqueConstraint, LargeBinary, event
 from backend.app.db.session import Base
 
 class Scan(Base):
@@ -12,6 +12,10 @@ class Scan(Base):
     risk_score = Column(Integer, default=0)
     risk_level = Column(String(20), default="Low")
     result_json = Column(Text, nullable=False)
+    scan_mode = Column(String(40), default="PUBLIC_PASSIVE", index=True)
+    tenant_id = Column(String(64), default="default", index=True)
+    created_by = Column(String(128), default="anonymous", index=True)
+    authorization_state = Column(String(40), default="NOT_REQUIRED")
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
 class SecurityAssessment(Base):
@@ -805,3 +809,61 @@ class IntegrityVerificationRecord(Base):
     status=Column(String(30),nullable=False)
     details_json=Column(Text,default="{}")
     verified_at=Column(DateTime,default=lambda:datetime.now(timezone.utc),index=True)
+
+class FindingEvidenceProvenance(Base):
+    __tablename__ = "finding_evidence_provenance"
+    id=Column(Integer,primary_key=True)
+    finding_id=Column(String(120),index=True,nullable=False)
+    source_provider=Column(String(120),nullable=False,index=True)
+    source_type=Column(String(80),nullable=False)
+    observed_at=Column(DateTime,default=lambda:datetime.now(timezone.utc),nullable=False)
+    checked_at=Column(DateTime,default=lambda:datetime.now(timezone.utc),nullable=False)
+    confidence=Column(String(30),nullable=False,default="UNKNOWN")
+    provider_status=Column(String(40),nullable=False,default="UNKNOWN")
+    evidence_reference=Column(String(1024))
+    content_hash=Column(String(64),nullable=False,index=True)
+    scan_job_id=Column(String(120),index=True)
+    scan_id=Column(Integer,ForeignKey("scans.id"),index=True,nullable=True)
+    report_id=Column(Integer,ForeignKey("threat_intelligence_reports.id"),index=True,nullable=True)
+    revision_id=Column(Integer,ForeignKey("threat_report_revisions.id"),index=True,nullable=True)
+    title=Column(String(255),default="")
+    explanation=Column(Text,default="")
+    why_it_exists=Column(Text,default="")
+    severity=Column(String(30),default="INFO")
+    is_current=Column(Boolean,default=True,nullable=False)
+    evidence_payload_json=Column(Text,default="{}")
+    created_at=Column(DateTime,default=lambda:datetime.now(timezone.utc),index=True)
+
+class Tenant(Base):
+    __tablename__ = "tenants"
+    id = Column(String(64), primary_key=True)
+    name = Column(String(255), nullable=False)
+    plan = Column(String(64), default="free")
+    max_concurrent_jobs = Column(Integer, default=10)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+class TenantMember(Base):
+    __tablename__ = "tenant_members"
+    id = Column(Integer, primary_key=True)
+    tenant_id = Column(String(64), ForeignKey("tenants.id"), index=True, nullable=False)
+    user_id = Column(String(128), index=True, nullable=False)
+    role = Column(String(32), default="member")
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+class RateLimitRecord(Base):
+    __tablename__ = "rate_limit_records"
+    id = Column(Integer, primary_key=True)
+    client_key = Column(String(128), index=True, nullable=False)
+    window_bucket = Column(String(64), index=True, nullable=False)
+    request_count = Column(Integer, default=1)
+    last_request_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+class AbuseEvent(Base):
+    __tablename__ = "abuse_events"
+    id = Column(Integer, primary_key=True)
+    event_type = Column(String(64), nullable=False, index=True)
+    client_ip = Column(String(64), index=True)
+    tenant_id = Column(String(64), index=True)
+    user_id = Column(String(128), index=True)
+    details_json = Column(Text, default="{}")
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)

@@ -5,15 +5,16 @@ import secrets
 import httpx
 from datetime import datetime, timezone
 from pathlib import Path
-from fastapi import APIRouter, Depends, HTTPException, Header, UploadFile, File, BackgroundTasks, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Header, UploadFile, File, BackgroundTasks, Query, Response, Request
 from sqlalchemy import asc, case, cast, desc, func, or_, String as SQLString
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from backend.app.db.session import get_db, SessionLocal
-from backend.app.models.models import Scan, CommunityReport, DomainIntelligence, ProviderVerdict, ThreatIndicator, RedirectHop, BrandRegistry, BrandVerificationEvidence, BrandVerificationChallenge, BrandVerificationAudit, BrandLogoAsset, BrandImageReference, WebsiteImageCandidate, ImageComparison, CertificateRecord, CertificateChainLink, CertificateValidationResult, CertificateRevocationResult, CertificateRevocationJob, CertificateTransparencyEntry, CertificateTransparencyAnomaly, CertificateRiskAssessment, EmailAnalysis, EmailHeader, EmailAuthenticationResult, EmailHeaderAnomaly, EmailRawMessage, EmailSmtpContext, EmailVerificationRun, MessageAnalysisRecord, MessageIndicatorResult, MessageDomainSpoofingFinding, EmailProviderRegistry, ContactRiskAssessment, IntelligenceVerification, BackgroundTaskRun, MessageAnalysisMetadata, MessageContent, MessageAnalysisEvent, AppUser, LegacyIdentityLink, MessageReview, MessageReviewAudit, MessageReviewFeedback, MLDatasetVersion, MLModelVersion, MLDeploymentHistory, MLTrainingRun, SecurityAssessment, SecurityFinding, RemediationRecord, SecurityAuthorization, AssessmentEvent, ThreatIntelligenceReport, ReportRevision, WalletChallenge, WalletIdentity, DigitalSignature, EvidenceObject
-from backend.app.schemas.schemas import ScanRequest, ReportRequest
+from backend.app.models.models import Scan, CommunityReport, DomainIntelligence, ProviderVerdict, ThreatIndicator, RedirectHop, BrandRegistry, BrandVerificationEvidence, BrandVerificationChallenge, BrandVerificationAudit, BrandLogoAsset, BrandImageReference, WebsiteImageCandidate, ImageComparison, CertificateRecord, CertificateChainLink, CertificateValidationResult, CertificateRevocationResult, CertificateRevocationJob, CertificateTransparencyEntry, CertificateTransparencyAnomaly, CertificateRiskAssessment, EmailAnalysis, EmailHeader, EmailAuthenticationResult, EmailHeaderAnomaly, EmailRawMessage, EmailSmtpContext, EmailVerificationRun, MessageAnalysisRecord, MessageIndicatorResult, MessageDomainSpoofingFinding, EmailProviderRegistry, ContactRiskAssessment, IntelligenceVerification, BackgroundTaskRun, MessageAnalysisMetadata, MessageContent, MessageAnalysisEvent, AppUser, LegacyIdentityLink, MessageReview, MessageReviewAudit, MessageReviewFeedback, MLDatasetVersion, MLModelVersion, MLDeploymentHistory, MLTrainingRun, SecurityAssessment, SecurityFinding, RemediationRecord, SecurityAuthorization, AssessmentEvent, ThreatIntelligenceReport, ReportRevision, WalletChallenge, WalletIdentity, DigitalSignature, EvidenceObject, FindingEvidenceProvenance, Tenant, TenantMember, RateLimitRecord, AbuseEvent
+from backend.app.schemas.schemas import ScanRequest, ReportRequest, LinkRevisionRequest, VerifyHashRequest
 from backend.app.services.scanner import scan
 from backend.app.services.scanner import _destination_providers
+from backend.app.services.evidence_provenance import extract_and_persist_provenance, serialize_provenance, verify_content_hash, canonicalize_evidence
 from backend.app.engines.threats import check as check_threats
 from backend.app.engines.domain_intelligence import collect as collect_domain_intelligence
 from backend.app.engines.redirect_risk import score_redirect_chain
@@ -53,6 +54,8 @@ from backend.app.services.message_reports import bundle as build_message_report,
 from backend.app.services.security_assessment_reports import build_report as build_security_assessment_report, csv_bytes as security_report_csv_bytes, json_bytes as security_report_json_bytes, pdf_bytes as security_report_pdf_bytes, record_generation as record_security_report_generation, history as security_report_history, FORMATS as SECURITY_REPORT_FORMATS
 from backend.app.services.decentralized_threat_intelligence import create_report as create_threat_report, serialize_report as serialize_threat_report, serialize_revision as serialize_threat_revision, get_owned_report as get_owned_threat_report, add_revision as add_threat_revision, commitment_for_revision as threat_commitment_for_revision, verify_local_commitment, provenance as threat_provenance, validation_history as threat_validation_history, blockchain_metadata as threat_blockchain_metadata, calculate_commitment
 from backend.app.services.ledger import ledger_checkpoint, verify_ledger
+from backend.app.services.scan_jobs import create_job, submit as submit_scan_job
+from backend.app.services.privacy import privacy_summary
 from backend.app.services.blockchain_anchor import verify_external_receipt, verify_configuration as blockchain_configuration_status
 from backend.app.services.evm_blockchain import EVMBlockchainAdapter
 from backend.app.services.wallet_signatures import ownership_challenge, verify_ownership, signature_challenge, verify_signature
@@ -100,35 +103,74 @@ def _admin(x_admin_token: str | None) -> bool:
     return settings.environment.lower() != "production" and bool(x_admin_token and x_admin_token == settings.admin_api_token)
 
 def _scan_authorization(db, payload: ScanRequest, principal: Principal):
-    """Validate the authorization boundary for a direct scanner request."""
-    # Public passive scans are allowed when authentication and explicit scan
-    # authorization are disabled. Supplying an authorization_id still opts
-    # into the full authorization checks below.
-    required = settings.enforce_scan_authorization or settings.auth_required or payload.authorization_id is not None
-    if not required:
-        return None, None
-    if payload.authorization_id is None:
-        raise HTTPException(403, "An approved authorization_id is required before active scanning")
-    authorization = db.get(SecurityAuthorization, payload.authorization_id)
-    if not authorization:
-        raise HTTPException(403, "Authorization record not found")
-    expire_security_authorization(db, authorization)
-    if authorization.requester_user_id != principal.user_id and principal.role != "admin":
-        raise HTTPException(403, "Authorization belongs to another requester")
-    categories = [str(x).upper() for x in (payload.allowed_categories or ["FULL_SCAN"])]
-    if not authorization_scope_allows(authorization, payload.url, None):
-        raise HTTPException(403, "Target is outside the approved authorization scope")
-    approved_categories = {str(x).upper() for x in json.loads(authorization.allowed_categories_json or "[]")}
-    if "FULL_SCAN" not in approved_categories and "*" not in approved_categories and any(category not in approved_categories for category in categories):
-        raise HTTPException(403, "Requested scan category is outside the approved authorization")
-    if authorization.approval_status != "APPROVED":
-        raise HTTPException(403, "Authorization is not approved")
-    def guard():
+    """Validate scan mode and authorization boundary for a scanner request."""
+    mode = (getattr(payload, "scan_mode", "PUBLIC_PASSIVE") or "PUBLIC_PASSIVE").upper()
+    if mode == "AUTHORIZED_ACTIVE":
+        if payload.authorization_id is None:
+            raise HTTPException(403, "An approved authorization_id is required before active scanning")
+        authorization = db.get(SecurityAuthorization, payload.authorization_id)
+        if not authorization:
+            raise HTTPException(403, "Authorization record not found")
         expire_security_authorization(db, authorization)
-        db.refresh(authorization)
-        if authorization.approval_status != "APPROVED" or not authorization_scope_allows(authorization, payload.url, None):
-            raise AuthorizationStopped("active scan authorization is no longer valid")
-    return authorization, guard
+        if authorization.requester_user_id != principal.user_id and principal.role != "admin":
+            raise HTTPException(403, "Authorization belongs to another requester")
+        categories = [str(x).upper() for x in (payload.allowed_categories or ["FULL_SCAN"])]
+        if not authorization_scope_allows(authorization, payload.url, None):
+            raise HTTPException(403, "Target is outside the approved authorization scope")
+        approved_categories = {str(x).upper() for x in json.loads(authorization.allowed_categories_json or "[]")}
+        if "FULL_SCAN" not in approved_categories and "*" not in approved_categories and any(category not in approved_categories for category in categories):
+            raise HTTPException(403, "Requested scan category is outside the approved authorization")
+        if authorization.approval_status != "APPROVED":
+            raise HTTPException(403, "Authorization is not approved")
+        def guard():
+            expire_security_authorization(db, authorization)
+            db.refresh(authorization)
+            if authorization.approval_status != "APPROVED" or not authorization_scope_allows(authorization, payload.url, None):
+                raise AuthorizationStopped("active scan authorization is no longer valid")
+        return authorization, guard
+    elif mode == "AUTHENTICATED_PASSIVE":
+        if not principal.authenticated and settings.auth_required:
+            raise HTTPException(401, "Authentication required for user-owned scan history")
+        return None, None
+    elif mode == "ADMIN_REVIEW":
+        if principal.role != "admin":
+            raise HTTPException(403, "Administrator privilege required for admin review mode")
+        return None, None
+    else: # PUBLIC_PASSIVE
+        required = settings.enforce_scan_authorization
+        if required and payload.authorization_id is None:
+            raise HTTPException(403, "An approved authorization_id is required when ENFORCE_SCAN_AUTHORIZATION is active")
+        return None, None
+
+def _enforce_rate_limits(db: Session, client_ip: str, principal: Principal, mode: str):
+    if principal.role == "admin":
+        return
+    now = datetime.now(timezone.utc)
+    minute_bucket = now.strftime("%Y-%m-%d-%H-%M")
+    day_bucket = now.strftime("%Y-%m-%d")
+    client_key = f"ip:{client_ip}" if not principal.authenticated else f"user:{principal.user_id}"
+    min_record = db.query(RateLimitRecord).filter(RateLimitRecord.client_key == client_key, RateLimitRecord.window_bucket == minute_bucket).first()
+    if min_record:
+        if min_record.request_count >= 5 and mode == "PUBLIC_PASSIVE":
+            db.add(AbuseEvent(event_type="RATE_LIMIT_EXCEEDED", client_ip=client_ip, user_id=principal.user_id, details_json=json.dumps({"limit": 5, "window": "minute"})))
+            db.commit()
+            raise HTTPException(429, "Rate limit exceeded. Maximum 5 scans per minute for public mode.")
+        min_record.request_count += 1
+        min_record.last_request_at = now
+    else:
+        db.add(RateLimitRecord(client_key=client_key, window_bucket=minute_bucket, request_count=1, last_request_at=now))
+    if not principal.authenticated:
+        day_record = db.query(RateLimitRecord).filter(RateLimitRecord.client_key == f"anon:{client_ip}", RateLimitRecord.window_bucket == day_bucket).first()
+        if day_record:
+            if day_record.request_count >= 50:
+                db.add(AbuseEvent(event_type="DAILY_QUOTA_EXCEEDED", client_ip=client_ip, user_id="anonymous", details_json=json.dumps({"limit": 50, "window": "day"})))
+                db.commit()
+                raise HTTPException(429, "Daily quota exceeded for anonymous scans.")
+            day_record.request_count += 1
+            day_record.last_request_at = now
+        else:
+            db.add(RateLimitRecord(client_key=f"anon:{client_ip}", window_bucket=day_bucket, request_count=1, last_request_at=now))
+    db.commit()
 
 def _can_view(meta: MessageAnalysisMetadata, user_id: str, admin: bool, legacy_ids: tuple[str, ...] = ()) -> bool:
     return admin or meta.user_id in (user_id, *legacy_ids)
@@ -162,6 +204,16 @@ def auth_session(response: Response, authorization: str | None = Header(default=
 @router.post("/auth/logout")
 def auth_logout(response: Response):
     response.delete_cookie(settings.session_cookie_name, path="/"); return {"logged_out": True}
+
+@router.get("/auth/permissions")
+def auth_permissions(principal: Principal = Depends(get_current_principal)):
+    return {"authenticated": principal.authenticated, "user_id": principal.user_id, "role": principal.role, "capabilities": {"passive_scans": True, "active_scans": principal.authenticated, "admin_operations": principal.role == "admin", "private_evidence": principal.authenticated}}
+
+@router.post("/privacy/redact")
+def privacy_redact(payload: dict, principal: Principal = Depends(get_current_principal)):
+    if not principal.authenticated and settings.auth_required:
+        raise HTTPException(401, "Authentication required for privacy processing")
+    return privacy_summary(payload)
 
 @router.post("/security-assessments")
 def create_security_assessment(payload: dict, principal: Principal = Depends(get_current_principal), db: Session = Depends(get_db)):
@@ -603,7 +655,10 @@ def urlhaus_latest(db: Session = Depends(get_db)):
     return {"provider": row.provider, "status": row.status, "verdict": row.verdict, "evidence": json.loads(row.evidence_json or "{}"), "checked_at": row.checked_at}
 
 @router.post("/scans")
-def create_scan(payload: ScanRequest, principal: Principal = Depends(get_current_principal), db: Session = Depends(get_db)):
+def create_scan(request: Request, payload: ScanRequest, principal: Principal = Depends(get_current_principal), db: Session = Depends(get_db)):
+    mode = (getattr(payload, "scan_mode", "PUBLIC_PASSIVE") or "PUBLIC_PASSIVE").upper()
+    client_ip = request.client.host if request.client else "127.0.0.1"
+    _enforce_rate_limits(db, client_ip, principal, mode)
     authorization, guard = _scan_authorization(db, payload, principal)
     try: result = scan(payload.url, db, authorization_guard=guard)
     except AuthorizationStopped as exc:
@@ -632,7 +687,18 @@ def create_scan(payload: ScanRequest, principal: Principal = Depends(get_current
             finding={"finding_type":f"{finding_type}_reference_match","brand":match.get("brand"),"brand_id":match.get("brand_id"),"reference_asset_id":match.get("reference_asset_id") or match.get("reference_logo_id"),"candidate_url":match.get("candidate_url"),"similarity":match.get("similarity_percent"),"exact_match":match.get("exact_match",False),"confidence":match.get("confidence"),"source":"approved_brand_reference","checked_at":datetime.now(timezone.utc).isoformat(),"risk_contribution":0,"explanation":"Image similarity is supporting identity evidence and is not proof of ownership or fraud."}
             identity["findings"].append(finding)
     result["risk"] = calculate(result.get("phishing",{}), result.get("network",{}), result.get("threat_intelligence",{}), result.get("domain_intelligence",{}), result.get("certificate",{}))
-    row = Scan(url=payload.url, normalized_url=result["normalized_url"], domain=result["domain"], risk_score=result["risk"]["score"], risk_level=result["risk"]["level"], result_json=json.dumps(result))
+    row = Scan(
+        url=payload.url,
+        normalized_url=result["normalized_url"],
+        domain=result["domain"],
+        risk_score=result["risk"]["score"],
+        risk_level=result["risk"]["level"],
+        result_json=json.dumps(result),
+        scan_mode=mode,
+        tenant_id=getattr(payload, "tenant_id", "default") or "default",
+        created_by=principal.user_id,
+        authorization_state="APPROVED" if authorization else "NOT_REQUIRED"
+    )
     db.add(row); db.commit(); db.refresh(row)
     intel=result.get("domain_intelligence",{}); db.add(DomainIntelligence(scan_id=row.id,domain=row.domain,rdap_json=json.dumps(intel.get("rdap",{})),infrastructure_json=json.dumps(intel.get("infrastructure",{})),identity_json=json.dumps(intel.get("identity",{}))))
     certificate=result.get("certificate",{}); cert_items=certificate.get("certificates",[])
@@ -677,18 +743,186 @@ def create_scan(payload: ScanRequest, principal: Principal = Depends(get_current
             db.add(ThreatIndicator(indicator=row.domain,indicator_type="domain",category=finding.get("provider"),confidence=1 if finding.get("state")=="confirmed" else .5,verification_status=finding.get("state","unverified"),source=source,source_reference=finding.get("reference")))
     for hop in result.get("network",{}).get("http",{}).get("redirects",[]):
         db.add(RedirectHop(scan_id=row.id, sequence=hop.get("sequence", 0), source_url=hop.get("source_url", ""), destination_url=hop.get("destination_url", ""), source_domain=hop.get("source_domain"), destination_domain=hop.get("destination_domain"), status_code=hop.get("status_code"), redirect_type=hop.get("redirect_type"), https=str(hop.get("https")), https_downgrade=str(hop.get("https_downgrade")), destination_ips_json=json.dumps(hop.get("destination_ips", [])), reputation_json=json.dumps(result.get("network",{}).get("redirect_analysis",{}).get("destinations",{}).get(hop.get("destination_domain"), {})), analysis_status=hop.get("analysis_status", "complete")))
+    extract_and_persist_provenance(db, row.id, result, scan_job_id=None)
     db.commit()
-    return {"id": row.id, **result, "created_at": row.created_at}
+    return {"id": row.id, **result, "scan_mode": row.scan_mode, "created_at": row.created_at}
+
+@router.post("/scan-jobs", status_code=202)
+def create_realtime_scan_job(request: Request, payload: ScanRequest, principal: Principal = Depends(get_current_principal), db: Session = Depends(get_db)):
+    """Queue a non-blocking threat scan and return a pollable job id."""
+    mode = (getattr(payload, "scan_mode", "PUBLIC_PASSIVE") or "PUBLIC_PASSIVE").upper()
+    client_ip = request.client.host if request.client else "127.0.0.1"
+    _enforce_rate_limits(db, client_ip, principal, mode)
+    authorization, _ = _scan_authorization(db, payload, principal)
+    task_id = create_job(db, payload.url)
+    submit_scan_job(task_id, payload.url, authorization.id if authorization else None, principal.user_id)
+    return {"task_id": task_id, "status": "QUEUED", "scan_mode": mode}
+
+@router.post("/scan-jobs/{task_id}/cancel")
+def cancel_scan_job(task_id: str, principal: Principal = Depends(get_current_principal), db: Session = Depends(get_db)):
+    row = db.query(BackgroundTaskRun).filter(BackgroundTaskRun.task_id == task_id).first()
+    if not row:
+        raise HTTPException(404, "Scan job not found")
+    if row.status in ["COMPLETED", "FAILED"]:
+        return {"task_id": task_id, "status": row.status, "message": "Job already finalized"}
+    row.status = "CANCELLED"
+    row.completed_at = datetime.now(timezone.utc)
+    db.commit()
+    return {"task_id": task_id, "status": "CANCELLED"}
+
+@router.get("/scan-jobs/{task_id}/events")
+def get_scan_job_events(task_id: str, db: Session = Depends(get_db)):
+    row = db.query(BackgroundTaskRun).filter(BackgroundTaskRun.task_id == task_id).first()
+    if not row:
+        raise HTTPException(404, "Scan job not found")
+    events = [
+        {"stage": "URL_VALIDATION", "status": "COMPLETED", "occurred_at": row.started_at},
+        {"stage": "DNS_RESOLUTION", "status": "COMPLETED" if row.status in ["COMPLETED", "RUNNING"] else "PENDING"},
+        {"stage": "TLS_CERTIFICATE", "status": "COMPLETED" if row.status in ["COMPLETED", "RUNNING"] else "PENDING"},
+        {"stage": "THREAT_INTELLIGENCE", "status": "COMPLETED" if row.status == "COMPLETED" else "RUNNING" if row.status == "RUNNING" else "PENDING"},
+        {"stage": "RISK_CALCULATION", "status": "COMPLETED" if row.status == "COMPLETED" else "PENDING"},
+        {"stage": "EVIDENCE_PERSISTENCE", "status": "COMPLETED" if row.status == "COMPLETED" else "PENDING"}
+    ]
+    return {"task_id": task_id, "job_status": row.status, "events": events}
+
+@router.get("/abuse-events")
+def list_abuse_events(limit: int = 50, principal: Principal = Depends(get_current_principal), _: None = Depends(admin_only), db: Session = Depends(get_db)):
+    rows = db.query(AbuseEvent).order_by(AbuseEvent.created_at.desc()).limit(limit).all()
+    return [{
+        "id": r.id,
+        "event_type": r.event_type,
+        "client_ip": r.client_ip,
+        "user_id": r.user_id,
+        "tenant_id": r.tenant_id,
+        "details": json.loads(r.details_json or "{}"),
+        "created_at": r.created_at
+    } for r in rows]
+
+@router.get("/quotas/status")
+def get_quota_status(request: Request, principal: Principal = Depends(get_current_principal), db: Session = Depends(get_db)):
+    client_ip = request.client.host if request.client else "127.0.0.1"
+    now = datetime.now(timezone.utc)
+    minute_bucket = now.strftime("%Y-%m-%d-%H-%M")
+    day_bucket = now.strftime("%Y-%m-%d")
+    client_key = f"ip:{client_ip}" if not principal.authenticated else f"user:{principal.user_id}"
+    min_record = db.query(RateLimitRecord).filter(RateLimitRecord.client_key == client_key, RateLimitRecord.window_bucket == minute_bucket).first()
+    day_record = db.query(RateLimitRecord).filter(RateLimitRecord.client_key == f"anon:{client_ip}", RateLimitRecord.window_bucket == day_bucket).first()
+    return {
+        "client_ip": client_ip,
+        "authenticated": principal.authenticated,
+        "user_id": principal.user_id,
+        "minute_limit": 5,
+        "minute_used": min_record.request_count if min_record else 0,
+        "minute_remaining": max(0, 5 - (min_record.request_count if min_record else 0)),
+        "daily_limit": 50,
+        "daily_used": day_record.request_count if day_record else 0,
+        "daily_remaining": max(0, 50 - (day_record.request_count if day_record else 0))
+    }
+
+@router.get("/scan-jobs/{task_id}")
+def get_realtime_scan_job(task_id: str, db: Session = Depends(get_db)):
+    row = db.query(BackgroundTaskRun).filter(BackgroundTaskRun.task_id == task_id, BackgroundTaskRun.task_name == "real_time_scan").first()
+    if not row:
+        raise HTTPException(404, "Scan job not found")
+    response = {"task_id": row.task_id, "status": row.status, "error": row.error, "started_at": row.started_at, "completed_at": row.completed_at}
+    if row.result_json:
+        data = json.loads(row.result_json)
+        response.update(data)
+        scan_id = data.get("scan_id") or (data.get("result", {}).get("id"))
+        if scan_id:
+            provenance_rows = db.query(FindingEvidenceProvenance).filter(FindingEvidenceProvenance.scan_id == scan_id).order_by(FindingEvidenceProvenance.id).all()
+            if provenance_rows:
+                serialized = [serialize_provenance(p) for p in provenance_rows]
+                response.setdefault("result", {})["evidence_provenance"] = serialized
+                response["evidence_provenance"] = serialized
+    return response
 
 @router.get("/scans")
-def history(limit: int = Query(1000, ge=1, le=1000), db: Session = Depends(get_db)):
-    return [{"id": x.id, "url": x.url, "domain": x.domain, "risk_score": x.risk_score, "risk_level": x.risk_level, "created_at": x.created_at} for x in db.query(Scan).order_by(Scan.created_at.desc()).limit(limit).all()]
+def history(limit: int = Query(1000, ge=1, le=1000), principal: Principal = Depends(get_current_principal), db: Session = Depends(get_db)):
+    query = db.query(Scan)
+    if principal.role != "admin":
+        if principal.authenticated:
+            query = query.filter((Scan.created_by == principal.user_id) | (Scan.scan_mode == "PUBLIC_PASSIVE"))
+        else:
+            query = query.filter(Scan.scan_mode == "PUBLIC_PASSIVE")
+    return [{"id": x.id, "url": x.url, "domain": x.domain, "risk_score": x.risk_score, "risk_level": x.risk_level, "scan_mode": x.scan_mode, "created_at": x.created_at} for x in query.order_by(Scan.created_at.desc()).limit(limit).all()]
 
 @router.get("/scans/{scan_id}")
-def get_scan(scan_id: int, db: Session = Depends(get_db)):
+def get_scan(scan_id: int, principal: Principal = Depends(get_current_principal), db: Session = Depends(get_db)):
     row = db.get(Scan, scan_id)
     if not row: raise HTTPException(404, "Scan not found")
-    return {"id": row.id, **json.loads(row.result_json), "created_at": row.created_at}
+    if principal.role != "admin" and row.scan_mode != "PUBLIC_PASSIVE" and row.created_by != principal.user_id:
+        raise HTTPException(403, "Access to scan is restricted to its owner or administrator")
+    result_data = json.loads(row.result_json) if row.result_json else {}
+    provenance_rows = db.query(FindingEvidenceProvenance).filter(FindingEvidenceProvenance.scan_id == row.id).order_by(FindingEvidenceProvenance.id).all()
+    if provenance_rows:
+        result_data["evidence_provenance"] = [serialize_provenance(p) for p in provenance_rows]
+    return {"id": row.id, **result_data, "created_at": row.created_at}
+
+@router.get("/evidence-provenance")
+def list_evidence_provenance(
+    scan_id: int | None = None,
+    scan_job_id: str | None = None,
+    finding_id: str | None = None,
+    source_provider: str | None = None,
+    is_current: bool | None = None,
+    limit: int = Query(100, ge=1, le=500),
+    db: Session = Depends(get_db),
+):
+    query = db.query(FindingEvidenceProvenance)
+    if scan_id is not None:
+        query = query.filter(FindingEvidenceProvenance.scan_id == scan_id)
+    if scan_job_id:
+        query = query.filter(FindingEvidenceProvenance.scan_job_id == scan_job_id.strip())
+    if finding_id:
+        query = query.filter(FindingEvidenceProvenance.finding_id == finding_id.strip())
+    if source_provider:
+        query = query.filter(FindingEvidenceProvenance.source_provider.ilike(f"%{source_provider.strip()}%"))
+    if is_current is not None:
+        query = query.filter(FindingEvidenceProvenance.is_current == is_current)
+    rows = query.order_by(FindingEvidenceProvenance.id.desc()).limit(limit).all()
+    return {"count": len(rows), "items": [serialize_provenance(r) for r in rows]}
+
+@router.get("/evidence-provenance/{provenance_id}")
+def get_single_evidence_provenance(provenance_id: int, db: Session = Depends(get_db)):
+    row = db.get(FindingEvidenceProvenance, provenance_id)
+    if not row:
+        raise HTTPException(404, "Evidence provenance record not found")
+    return serialize_provenance(row)
+
+@router.post("/evidence-provenance/{provenance_id}/verify")
+def verify_single_evidence_provenance(provenance_id: int, db: Session = Depends(get_db)):
+    row = db.get(FindingEvidenceProvenance, provenance_id)
+    if not row:
+        raise HTTPException(404, "Evidence provenance record not found")
+    res = verify_content_hash(row.content_hash, row.evidence_payload_json)
+    return {"id": row.id, "finding_id": row.finding_id, **res}
+
+@router.post("/evidence-provenance/{provenance_id}/link-revision")
+def link_provenance_to_revision(provenance_id: int, payload: LinkRevisionRequest, db: Session = Depends(get_db)):
+    row = db.get(FindingEvidenceProvenance, provenance_id)
+    if not row:
+        raise HTTPException(404, "Evidence provenance record not found")
+    if payload.report_id is not None:
+        row.report_id = payload.report_id
+    if payload.revision_id is not None:
+        row.revision_id = payload.revision_id
+    db.commit()
+    return serialize_provenance(row)
+
+@router.post("/evidence-provenance/verify-hash")
+def verify_arbitrary_evidence_hash(payload: VerifyHashRequest):
+    content_hash, canonical_json = canonicalize_evidence(payload.payload)
+    matches = (content_hash.lower() == payload.expected_hash.strip().lower())
+    return {
+        "verified": matches,
+        "matches": matches,
+        "hash_algorithm": "SHA-256",
+        "stored_hash": payload.expected_hash,
+        "computed_hash": content_hash,
+        "canonical_payload": canonical_json,
+        "verified_at": datetime.now(timezone.utc).isoformat(),
+    }
 
 @router.get("/scans/{scan_id}/evidence-chain")
 def scan_evidence_chain(scan_id: int, db: Session = Depends(get_db)):
