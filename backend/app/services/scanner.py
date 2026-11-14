@@ -10,6 +10,7 @@ from backend.app.engines.domain_intelligence import collect
 from backend.app.engines.redirect_risk import score_redirect_chain, compare_destinations
 from backend.app.engines.tls_http_assessment import analyze_tls_report
 from backend.app.services.security_authorization import AuthorizationStopped
+from backend.app.services.blh_scanner import analyze_external_links
 
 def _provider_state(item):
     status=str(item.get("status", "unknown")).lower()
@@ -87,4 +88,10 @@ def scan(raw_url: str, db=None, authorization_guard=None):
         overall_risk["redirect_influence"] = {"score":redirect_score, "added":min(25, redirect_score // 2), "explanation":"Redirect evidence contributes up to 25 points and is kept separate from the redirect score."}
     if authorization_guard:
         authorization_guard()
-    return {"url": raw_url, "normalized_url": url, "domain": domain, "phishing": phishing, "domain_intelligence": domain_intelligence, "network": network, "certificate": certificate, "threat_intelligence": threats, "precautions": precautions, "risk": overall_risk}
+    try:
+        blh = analyze_external_links(url, authorization_guard=authorization_guard)
+    except AuthorizationStopped:
+        raise
+    except Exception as exc:
+        blh = {"status": "UNAVAILABLE", "target_url": url, "external_links": [], "findings": [], "summary": {"total": 0, "broken": 0, "nxdomain": 0, "dangling": 0, "potential_takeover": 0, "risk_score": 0, "risk_level": "LOW"}, "error": type(exc).__name__}
+    return {"url": raw_url, "normalized_url": url, "domain": domain, "phishing": phishing, "domain_intelligence": domain_intelligence, "network": network, "certificate": certificate, "threat_intelligence": threats, "blh": blh, "precautions": precautions, "risk": overall_risk}

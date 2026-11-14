@@ -34,6 +34,7 @@ import MLLifecycleStatusPanel from "./components/MLLifecycleStatusPanel";
 import MLModelManagementPanel from "./components/MLModelManagementPanel";
 import ContactIntelligencePanel from "./components/ContactIntelligencePanel";
 import AdminReviewPanel from "./components/AdminReviewPanel";
+import BLHScanPanel from "./components/BLHScanPanel";
 
 const nav = [
   ["Overview", BarChart3],
@@ -52,6 +53,7 @@ const nav = [
 ] as const;
 const serviceNav = [
   ["Threat scanner", Radar] as const,
+  ["BLH resource scan", Radar] as const,
   ["Scan history", History] as const,
   ["Evidence provenance", Fingerprint] as const,
   ["Ledger & Blockchain", ShieldCheck] as const,
@@ -67,7 +69,7 @@ const serviceNav = [
   ["ML lifecycle status", Activity] as const,
 ];
 const serviceGroups = [
-  { label: "Real-time threat detection", items: ["Threat scanner", "Scan history"] },
+  { label: "Real-time threat detection", items: ["Threat scanner", "BLH resource scan", "Scan history"] },
   { label: "Cryptographic provenance & ledger", items: ["Evidence provenance", "Ledger & Blockchain"] },
   { label: "Zero-trust & governance", items: ["Zero-trust controls", "Privacy center", "Identity & auth", "Administrator review"] },
   { label: "Analysis & intelligence services", items: ["Website security", "Message analysis", "Email analysis", "Message analysis history", "Message analysis reports", "Contact intelligence", "ML lifecycle status"] },
@@ -236,6 +238,7 @@ export default function App() {
               {result && <ScanResult data={result} />}
             </>
           )}
+          {tab === "BLH resource scan" && <BLHServicePanel data={result} setTab={setTab} />}
           {tab === "Evidence provenance" && (
             <div className="space-y-6">
               <div className="glass rounded-3xl p-6">
@@ -737,6 +740,19 @@ function RedirectPanel({ data }: any) {
     </div>
   );
 }
+function BLHServicePanel({ data, setTab }: { data?: any; setTab: (tab: string) => void }) {
+  return (
+    <div className="space-y-5">
+      <div className="glass rounded-3xl p-6">
+        <div className="text-xs uppercase tracking-[.2em] text-cyan">Real-time threat detection / BLH</div>
+        <h2 className="mt-2 text-2xl font-semibold">Broken links & dangling-host analysis</h2>
+        <p className="mt-2 max-w-3xl text-sm text-slate-400">Review external resources discovered by the latest website scan, including HTTP failures, DNS evidence, hosting fingerprints, and potential subdomain-takeover indicators.</p>
+        {!data ? <div className="mt-5 rounded-xl border border-amber-300/20 bg-amber-300/5 p-4 text-sm text-amber-200">Run a Threat Scanner scan first. BLH evidence will appear here after the scan completes.<button type="button" onClick={() => setTab("Threat scanner")} className="ml-3 rounded-lg border border-cyan/40 px-3 py-1 text-xs text-cyan">Open Threat Scanner</button></div> : <BLHScanPanel data={data} />}
+      </div>
+    </div>
+  );
+}
+
 function ScanResult({ data }: any) {
   return (
     <div className="glass rounded-3xl p-6">
