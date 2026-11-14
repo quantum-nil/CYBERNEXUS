@@ -25,6 +25,14 @@ def test_indian_phone_validation_is_metadata_only(monkeypatch):
     assert result["risk_score"] is None
 
 
+def test_indian_national_format_is_normalized_using_default_region(monkeypatch):
+    monkeypatch.setattr(contact_intelligence.settings, "phone_reputation_api_url", "")
+    result = contact_intelligence.validate_phone("9903155563")
+    assert result["normalized"] == "+919903155563"
+    assert result["country_code"] == 91
+    assert result["valid"] is True
+
+
 def test_invalid_phone_is_not_assumed_safe(monkeypatch):
     monkeypatch.setattr(contact_intelligence.settings, "phone_reputation_api_url", "")
     result = contact_intelligence.phone_analysis("+910000")
@@ -39,6 +47,7 @@ def test_phone_provider_malicious_result_is_scored(monkeypatch):
         def json(self):
             return {"verdict": "scam", "confidence": 0.94, "abuse_reports": 12}
 
+    monkeypatch.setattr(contact_intelligence.settings, "ipqualityscore_api_key", "")
     monkeypatch.setattr(contact_intelligence.settings, "phone_reputation_api_url", "https://provider.test/phone")
     monkeypatch.setattr(contact_intelligence.settings, "phone_reputation_api_key", "test-key")
     monkeypatch.setattr(contact_intelligence.httpx, "get", lambda *args, **kwargs: Response())
@@ -50,11 +59,41 @@ def test_phone_provider_malicious_result_is_scored(monkeypatch):
 
 def test_phone_provider_timeout_remains_unknown(monkeypatch):
     contact_intelligence._cache.clear()
+    monkeypatch.setattr(contact_intelligence.settings, "ipqualityscore_api_key", "")
     monkeypatch.setattr(contact_intelligence.settings, "phone_reputation_api_url", "https://provider.test/timeout")
     monkeypatch.setattr(contact_intelligence.settings, "phone_reputation_api_key", "")
     monkeypatch.setattr(contact_intelligence.httpx, "get", lambda *args, **kwargs: (_ for _ in ()).throw(contact_intelligence.httpx.TimeoutException("timeout")))
     result = contact_intelligence.phone_analysis("+14155552671")
     assert result["reputation"]["status"] == "TIMEOUT"
+    assert result["classification"] == "UNKNOWN"
+    assert result["risk_score"] is None
+
+
+def test_ipqualityscore_schema_preserves_reported_and_predicted_signals(monkeypatch):
+    monkeypatch.setattr(contact_intelligence.settings, "ipqualityscore_api_key", "ipqs-test")
+    monkeypatch.setattr(contact_intelligence.settings, "phone_reputation_cache_ttl_seconds", 1)
+    class Response:
+        status_code = 200
+        def json(self):
+            return {"success": True, "valid": True, "active": True, "fraud_score": 86,
+                    "recent_abuse": False, "risky": True, "spammer": False,
+                    "carrier": "Test Carrier", "country": "IN", "line_type": "Wireless"}
+    monkeypatch.setattr(contact_intelligence.httpx, "get", lambda *args, **kwargs: Response())
+    result = contact_intelligence.phone_analysis("+14155552672")
+    assert result["reputation"]["status"] == "COMPLETED"
+    assert result["risk_score"] == 86
+    assert "risky" in result["reputation"]["reported_signals"]
+    assert "fraud_score" in result["reputation"]["prediction_signals"]
+    assert result["classification"] == "HIGH"
+
+
+def test_ipqualityscore_quota_and_malformed_responses_are_unknown(monkeypatch):
+    monkeypatch.setattr(contact_intelligence.settings, "ipqualityscore_api_key", "ipqs-test")
+    class Response:
+        status_code = 200
+        def json(self): return {"success": False, "message": "insufficient credits"}
+    monkeypatch.setattr(contact_intelligence.httpx, "get", lambda *args, **kwargs: Response())
+    result = contact_intelligence.phone_analysis("+919876543210")
     assert result["classification"] == "UNKNOWN"
     assert result["risk_score"] is None
 

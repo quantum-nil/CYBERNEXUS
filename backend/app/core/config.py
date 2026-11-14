@@ -78,7 +78,9 @@ class Settings(BaseSettings):
     phone_reputation_timeout_seconds: float = 6
     phone_reputation_cache_ttl_seconds: int = 900
     phone_reputation_max_retries: int = 2
+    phone_reputation_rate_limit_per_minute: int = 60
     phone_reputation_provider: str = "configured-phone-provider"
+    phone_default_region: str = "IN"
     ipqualityscore_api_key: str = ""
     ipqualityscore_base_url: str = "https://ipqualityscore.com/api/json/phone"
     disposable_email_domains: str = ""

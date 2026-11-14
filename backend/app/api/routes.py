@@ -5,7 +5,7 @@ import secrets
 import httpx
 from datetime import datetime, timezone
 from pathlib import Path
-from fastapi import APIRouter, Depends, HTTPException, Header, UploadFile, File, BackgroundTasks, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Header, UploadFile, File, BackgroundTasks, Query, Response, Request
 from sqlalchemy import asc, case, cast, desc, func, or_, String as SQLString
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -35,8 +35,9 @@ from backend.app.engines.commitments import commitment
 from backend.app.engines.ml import status as ml_status
 from backend.app.services.llm import configuration_status, verify_connection as verify_llm_connection
 from backend.app.core.config import settings
-from backend.app.engines.contact_intelligence import phone_analysis
+from backend.app.engines.contact_intelligence import phone_analysis, phone_provider_status
 from backend.app.engines.email_authentication_verification import verify as verify_email_authentication
+from backend.app.engines import email_security_investigation
 from backend.app.services.cache import health as cache_health
 from backend.app.services.auth import Principal, get_current_principal, sync_user, verify_token
 from backend.app.db.session import engine
@@ -417,9 +418,7 @@ def link_legacy_identity(payload: dict, principal: Principal = Depends(get_curre
 
 @router.get("/intelligence/providers/health")
 def intelligence_provider_health():
-    phone_configured = bool((settings.phone_reputation_api_url.strip() and settings.phone_reputation_api_key.strip()) or settings.ipqualityscore_api_key.strip())
-    phone_provider = "IPQualityScore Phone Validation" if settings.ipqualityscore_api_key.strip() else settings.phone_reputation_provider
-    return {"phone_reputation": {"status": "CONFIGURED" if phone_configured else "NOT_CONFIGURED", "provider": phone_provider}, "cache": cache_health(), "database": {"status": "CONNECTED" if health()["database"] == "ok" else "UNAVAILABLE"}, "workers": {"status": "CONFIGURED" if settings.celery_broker_url else "NOT_CONFIGURED"}}
+    return {"phone_reputation": phone_provider_status(), "cache": cache_health(), "database": {"status": "CONNECTED" if health()["database"] == "ok" else "UNAVAILABLE"}, "workers": {"status": "CONFIGURED" if settings.celery_broker_url else "NOT_CONFIGURED"}}
 
 @router.post("/intelligence/phone/analyze")
 def intelligence_phone(payload: dict, db: Session = Depends(get_db)):
@@ -435,13 +434,70 @@ def intelligence_email_authentication(payload: dict, db: Session = Depends(get_d
     email = payload.get("email")
     domain = payload.get("domain")
     if isinstance(email, str) and "@" in email: domain = email.rsplit("@", 1)[1]
-    if not isinstance(domain, str) or not re.match(r"^(?=.{1,253}$)[A-Za-z0-9.-]+$", domain): raise HTTPException(400, "email or domain is required")
+    if not isinstance(domain, str): raise HTTPException(400, "email or domain is required")
     raw = payload.get("raw_message")
     raw_bytes = raw.encode() if isinstance(raw, str) and raw else None
-    result = verify_email_authentication(domain, payload.get("selector"), raw_bytes)
-    db.add(IntelligenceVerification(indicator_type="email", indicator=domain.lower().rstrip("."), provider="DNS/email-authentication", status="COMPLETED", result_json=json.dumps(result), checked_at=datetime.now(timezone.utc)))
+    try:
+        result = email_security_investigation.investigate(domain, payload.get("selector"), raw_bytes)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    # Keep the legacy response shape for existing callers while exposing the
+    # complete investigation under the new fields.
+    result["legacy_authentication"] = verify_email_authentication(result["target"]["domain"], payload.get("selector"), raw_bytes)
+    db.add(IntelligenceVerification(indicator_type="email", indicator=result["target"]["domain"], provider="DNS/email-authentication", status="COMPLETED", result_json=json.dumps(result), checked_at=datetime.now(timezone.utc)))
     db.commit()
     return result
+
+
+@router.post("/intelligence/email/investigate")
+def investigate_email_security(request: Request, payload: dict, db: Session = Depends(get_db)):
+    """Investigate an email identity or domain without probing mailboxes."""
+    client_key = request.client.host if request.client else "unknown"
+    if not email_security_investigation.allow_request(client_key):
+        raise HTTPException(429, "Email investigation rate limit reached; retry shortly")
+    target = payload.get("target") or payload.get("email") or payload.get("domain")
+    selector = payload.get("selector") or payload.get("dkim_selector")
+    raw = payload.get("raw_message")
+    if raw is not None and not isinstance(raw, str):
+        raise HTTPException(400, "raw_message must be text containing the original RFC5322 message")
+    raw_bytes = raw.encode("utf-8", errors="surrogatepass") if raw else None
+    if raw_bytes and len(raw_bytes) > email_security_investigation.MAX_INVESTIGATION_BYTES:
+        raise HTTPException(413, "raw_message exceeds the 10 MB limit")
+    providers = [{"domain": item.domain, "provider_name": item.provider_name, "category": item.category, "disposable": item.disposable, "source": item.source} for item in db.query(EmailProviderRegistry).all()]
+    try:
+        result = email_security_investigation.investigate(target, selector, raw_bytes, providers)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    db.add(IntelligenceVerification(indicator_type="email", indicator=result["target"]["domain"], provider="email-security-investigation", status="COMPLETED", result_json=json.dumps(result), checked_at=datetime.now(timezone.utc)))
+    db.commit()
+    return result
+
+
+@router.post("/intelligence/email/remediation/verify")
+def verify_email_remediation(payload: dict):
+    """Re-read proposed TXT records; this endpoint never changes DNS."""
+    target = payload.get("domain") or payload.get("target")
+    try:
+        normalized = email_security_investigation.normalize_input(target)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    domain = normalized["domain"]
+    requested = payload.get("records") or []
+    if not isinstance(requested, list) or len(requested) > 20:
+        raise HTTPException(400, "records must be a list containing at most 20 TXT records")
+    checks = []
+    for item in requested:
+        if not isinstance(item, dict) or not isinstance(item.get("name"), str) or not isinstance(item.get("value"), str):
+            raise HTTPException(400, "each record must contain a DNS name and value")
+        record_type = str(item.get("type", "TXT")).upper()
+        if record_type != "TXT":
+            raise HTTPException(400, "remediation verification currently supports TXT records only")
+        name = item["name"].strip().rstrip(".")
+        if not (name == domain or name.endswith("." + domain)):
+            raise HTTPException(400, "verification is limited to the requested domain and its subdomains")
+        observed = email_security_investigation._dns_query(name, record_type)
+        checks.append({"name": name, "type": record_type, "expected": item["value"], "observed": observed.get("records", []), "status": "MATCH" if item["value"] in observed.get("records", []) else "NOT_MATCHED", "dns_status": observed.get("status")})
+    return {"domain": domain, "status": "VERIFIED" if checks and all(item["status"] == "MATCH" for item in checks) else "NOT_VERIFIED", "checks": checks, "message": "DNS was read for verification only. No record was created, changed, or overwritten."}
 
 @router.get("/intelligence/tasks/{task_id}")
 def intelligence_task(task_id: str, db: Session = Depends(get_db)):
