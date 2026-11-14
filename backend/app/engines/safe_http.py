@@ -51,7 +51,7 @@ def post_binary(url: str, body: bytes, content_type: str, timeout: float = 5.0, 
     ips = resolve_public_ips(parsed.hostname)
     ip = ips[0]
     port = parsed.port or (443 if parsed.scheme == "https" else 80)
-    sock = socket.create_connection((ip, port), timeout=timeout)
+    sock = _connect_validated(ips, port, timeout)
     try:
         if parsed.scheme == "https":
             context = ssl.create_default_context(cafile=certifi.where() if certifi else None)
@@ -92,6 +92,19 @@ def resolve_public_ips(hostname: str) -> list[str]:
         raise UnsafeDestination("mixed public and restricted DNS answers are blocked")
     return [str(value) for value in validated]
 
+
+def _connect_validated(ips: list[str], port: int, timeout: float):
+    """Try each already-validated address so unreachable IPv6 does not mask IPv4."""
+    last_error = None
+    for ip in ips:
+        try:
+            return socket.create_connection((ip, port), timeout=timeout)
+        except OSError as exc:
+            last_error = exc
+    if last_error:
+        raise last_error
+    raise UnsafeDestination("destination did not resolve")
+
 def fetch(url: str, timeout: float = 5.0, max_bytes: int | None = None) -> SafeResponse:
     parsed = urlsplit(url)
     if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
@@ -101,7 +114,7 @@ def fetch(url: str, timeout: float = 5.0, max_bytes: int | None = None) -> SafeR
     # reuse an address validated for a different hostname.
     ip = ips[0]
     port = parsed.port or (443 if parsed.scheme == "https" else 80)
-    sock = socket.create_connection((ip, port), timeout=timeout)
+    sock = _connect_validated(ips, port, timeout)
     try:
         if parsed.scheme == "https":
             context = ssl.create_default_context(cafile=certifi.where() if certifi else None)
